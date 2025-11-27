@@ -12,6 +12,8 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { AuthContext } from "./auth-context";
+import * as AuthSession from "expo-auth-session";
+
 
 
 import * as WebBrowser from "expo-web-browser";
@@ -29,10 +31,17 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // --- Google auth setup ---
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    // Replace these with your real client IDs from Google Cloud Console
-    clientId: "252024811502-224ig6sb8ibbgmaeec70jp66j62j9lto.apps.googleusercontent.com"
+// --- Google auth setup ---
+const redirectUri = AuthSession.makeRedirectUri();
+
+const [request, response, promptAsync] = Google.useAuthRequest({
+  clientId:
+    "252024811502-224ig6sb8ibbgmaeec70jp66j62j9lto.apps.googleusercontent.com",
+  scopes: ["openid", "profile", "email"],
+  redirectUri, // 👈 important
+  extraParams: {
+    prompt: "consent select_account",
+  },
 });
 
   // Handle Google auth response
@@ -63,14 +72,15 @@ export default function LoginScreen() {
     }
   };
 
-  const onGooglePress = async () => {
-    setError(null);
-    try {
-      await promptAsync();
-    } catch (e) {
-      setError("Google sign-in failed. Please try again.");
-    }
-  };
+ const onGooglePress = async () => {
+  setError(null);
+  try {
+    await promptAsync(); // 👈 no options here
+  } catch (e) {
+    setError("Google sign-in failed. Please try again.");
+  }
+};
+
 
   return (
     <SafeAreaView style={styles.safe}>

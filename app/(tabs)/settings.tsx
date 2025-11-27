@@ -1,5 +1,5 @@
 // app/(tabs)/settings.tsx
-import React, { useState } from "react";
+import React, { useState, useContext } from "react";
 import {
   View,
   Text,
@@ -8,10 +8,22 @@ import {
   TouchableOpacity,
 } from "react-native";
 import { ScreenContainer, Header } from "./_components";
+import { useRouter } from "expo-router";
+import { AuthContext } from "../auth-context";
 
 export default function SettingsScreen() {
   const [wifiOnly, setWifiOnly] = useState(true);
   const [backupOnOpen, setBackupOnOpen] = useState(true);
+
+  const auth = useContext(AuthContext);
+  const router = useRouter();
+
+  const handleLogout = () => {
+    // 1) Clear auth state
+    auth?.logout();
+    // 2) Navigate to login screen
+    router.replace("/login");
+  };
 
   return (
     <ScreenContainer>
@@ -67,8 +79,11 @@ export default function SettingsScreen() {
         <Text style={styles.settingsLabel}>Logged in as</Text>
         <Text style={styles.settingsValue}>alex@example.com</Text>
 
-        <TouchableOpacity style={styles.secondaryButton}>
-          <Text style={styles.secondaryButtonText}>Log out (demo)</Text>
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={handleLogout}
+        >
+          <Text style={styles.secondaryButtonText}>Log out</Text>
         </TouchableOpacity>
       </View>
     </ScreenContainer>
