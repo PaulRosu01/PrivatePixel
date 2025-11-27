@@ -1,12 +1,15 @@
 // app/(tabs)/library.tsx
+import * as MediaLibrary from "expo-media-library";
 import React, {
   useCallback,
   useMemo,
   useState,
 } from "react";
 import {
+  Alert,
   FlatList,
   Image,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -24,6 +27,7 @@ type MediaItem = {
   uri: string;
   createdAt: string; // ISO date
   type: MediaType;
+  source: "mock" | "device";
 };
 
 // -----------------------------------------------------------------------------
@@ -36,36 +40,42 @@ const initialMedia: MediaItem[] = [
     uri: "https://picsum.photos/400?random=11",
     createdAt: new Date().toISOString(),
     type: "photo",
+    source: "mock",
   },
   {
     id: "2",
     uri: "https://picsum.photos/400?random=12",
     createdAt: new Date().toISOString(),
     type: "photo",
+    source: "mock",
   },
   {
     id: "3",
     uri: "https://picsum.photos/400?random=13",
     createdAt: daysAgo(1),
     type: "video",
+    source: "mock",
   },
   {
     id: "4",
     uri: "https://picsum.photos/400?random=14",
     createdAt: daysAgo(2),
     type: "photo",
+    source: "mock",
   },
   {
     id: "5",
     uri: "https://picsum.photos/400?random=15",
     createdAt: daysAgo(5),
     type: "video",
+    source: "mock",
   },
   {
     id: "6",
     uri: "https://picsum.photos/400?random=16",
     createdAt: daysAgo(12),
     type: "photo",
+    source: "mock",
   },
 ];
 
@@ -127,6 +137,7 @@ export default function LibraryScreen() {
   const [filter, setFilter] = useState<"all" | "photos" | "videos">("all");
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [scanningDevice, setScanningDevice] = useState(false);
 
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
@@ -156,6 +167,7 @@ export default function LibraryScreen() {
       uri: "https://picsum.photos/400?random=" + Math.floor(Math.random() * 1000),
       createdAt: new Date().toISOString(),
       type: Math.random() > 0.7 ? "video" : "photo",
+      source: "mock",
     };
     setMedia((prev) => [newItem, ...prev]);
     setRefreshing(false);
@@ -167,8 +179,89 @@ export default function LibraryScreen() {
     setSyncing(false);
   }, [handleRefresh]);
 
+ const handleScanDevice = useCallback(async () => {
+  if (Platform.OS === "web") {
+    Alert.alert(
+      "Not supported on web",
+      "Device media scanning is only available on iOS/Android."
+    );
+    return;
+  }
+
+  setScanningDevice(true);
+  try {
+    const { status } = await MediaLibrary.requestPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert(
+        "Permission required",
+        "We need access to your photo library to scan for new media."
+      );
+      return;
+    }
+
+    const result = await MediaLibrary.getAssetsAsync({
+      mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+      first: 60,
+      sortBy: [MediaLibrary.SortBy.creationTime],
+    });
+
+    if (!result.assets.length) {
+      Alert.alert("No media", "No photos or videos found on this device.");
+      return;
+    }
+
+    // 🔥 IMPORTANT: resolve ph:// URIs to local file URIs
+    const assetsWithInfo = await Promise.all(
+      result.assets.map(async (asset) => {
+        try {
+          const info = await MediaLibrary.getAssetInfoAsync(asset);
+          return {
+            asset,
+            uri: info.localUri ?? asset.uri, // prefer localUri if available
+          };
+        } catch {
+          return { asset, uri: asset.uri };
+        }
+      })
+    );
+
+    const deviceItems: MediaItem[] = assetsWithInfo.map(({ asset, uri }) => ({
+      id: `device-${asset.id}`,
+      uri, // now file:// or normal http(s), not ph://
+      createdAt: new Date(
+        asset.creationTime ?? Date.now()
+      ).toISOString(),
+      type:
+        asset.mediaType === MediaLibrary.MediaType.video
+          ? "video"
+          : "photo",
+      source: "device",
+    }));
+
+    setMedia((prev) => {
+      const existingIds = new Set(prev.map((m) => m.id));
+      const merged = [...prev];
+      for (const item of deviceItems) {
+        if (!existingIds.has(item.id)) {
+          merged.push(item);
+        }
+      }
+      return merged;
+    });
+  } catch (e) {
+    console.error(e);
+    Alert.alert(
+      "Error",
+      "Failed to scan device media. Please try again."
+    );
+  } finally {
+    setScanningDevice(false);
+  }
+}, []);
+
+
   const openViewer = (allItemsInGroup: MediaItem[], itemIndex: number) => {
-    // Only photos in viewer for now (videos could open a different player later)
+    // Only photos in viewer for now
     const photosOnly = allItemsInGroup.filter((m) => m.type === "photo");
     const clickedItem = allItemsInGroup[itemIndex];
 
@@ -190,16 +283,7 @@ export default function LibraryScreen() {
 
         <View style={[styles.card, { marginBottom: 8 }]}>
           <View style={styles.cardHeaderRow}>
-            <Text style={styles.cardTitle}>Filter</Text>
-            <TouchableOpacity
-              onPress={handleSyncClick}
-              style={[styles.syncButton, syncing && { opacity: 0.7 }]}
-              disabled={syncing}
-            >
-              <Text style={styles.syncButtonText}>
-                {syncing ? "Syncing..." : "Sync with server (demo)"}
-              </Text>
-            </TouchableOpacity>
+            <Text style={styles.cardTitle}>Filter & sources</Text>
           </View>
 
           <View style={styles.segment}>
@@ -254,13 +338,36 @@ export default function LibraryScreen() {
               </Text>
             </TouchableOpacity>
           </View>
+
+          <View style={styles.actionsRow}>
+            <TouchableOpacity
+              onPress={handleSyncClick}
+              style={[styles.actionButton, syncing && { opacity: 0.7 }]}
+              disabled={syncing}
+            >
+              <Text style={styles.actionButtonText}>
+                {syncing ? "Syncing..." : "Sync with server (demo)"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleScanDevice}
+              style={[styles.actionButton, scanningDevice && { opacity: 0.7 }]}
+              disabled={scanningDevice}
+            >
+              <Text style={styles.actionButtonText}>
+                {scanningDevice ? "Scanning..." : "Scan device photos"}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {groups.length === 0 ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyTitle}>No media in this filter</Text>
             <Text style={styles.emptySubtitle}>
-              Try selecting another filter or sync with your server.
+              Try selecting another filter, syncing with your server, or scanning
+              your device.
             </Text>
           </View>
         ) : (
@@ -298,6 +405,11 @@ export default function LibraryScreen() {
                           <Text style={styles.videoBadgeIcon}>▶</Text>
                         </View>
                       )}
+                      {item.source === "device" && (
+                        <View style={styles.deviceBadge}>
+                          <Text style={styles.deviceBadgeText}>Device</Text>
+                        </View>
+                      )}
                     </TouchableOpacity>
                   )}
                 />
@@ -313,7 +425,6 @@ export default function LibraryScreen() {
         imageIndex={viewerIndex}
         visible={viewerVisible}
         onRequestClose={() => setViewerVisible(false)}
-        // optional:
         presentationStyle="overFullScreen"
         swipeToCloseEnabled={true}
       />
@@ -372,14 +483,23 @@ const styles = StyleSheet.create({
     color: "#e5e7eb",
     fontWeight: "600",
   },
-  syncButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+  actionsRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 10,
+    flexWrap: "wrap",
+  },
+  actionButton: {
+    flexGrow: 1,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "#38bdf8",
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  syncButtonText: {
+  actionButtonText: {
     fontSize: 11,
     color: "#38bdf8",
     fontWeight: "500",
@@ -419,6 +539,20 @@ const styles = StyleSheet.create({
   videoBadgeIcon: {
     color: "#f9fafb",
     fontSize: 11,
+  },
+  deviceBadge: {
+    position: "absolute",
+    left: 4,
+    top: 4,
+    backgroundColor: "rgba(15,23,42,0.8)",
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  deviceBadgeText: {
+    fontSize: 10,
+    color: "#a5b4fc",
+    fontWeight: "500",
   },
   emptyState: {
     marginTop: 40,
