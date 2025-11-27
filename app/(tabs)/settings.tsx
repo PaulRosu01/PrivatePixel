@@ -1,17 +1,33 @@
 // app/(tabs)/settings.tsx
-import React, { useState } from "react";
+import { useTheme } from "@react-navigation/native";
+import { useRouter } from "expo-router";
+import React, { useContext, useState } from "react";
 import {
-  View,
-  Text,
   StyleSheet,
   Switch,
+  Text,
   TouchableOpacity,
+  View,
 } from "react-native";
-import { ScreenContainer, Header } from "./_components";
+import { AuthContext } from "../auth-context";
+import { ThemeModeContext } from "../theme-context";
+import { Header, ScreenContainer } from "./_components";
 
 export default function SettingsScreen() {
   const [wifiOnly, setWifiOnly] = useState(true);
   const [backupOnOpen, setBackupOnOpen] = useState(true);
+
+  const auth = useContext(AuthContext);
+  const themeMode = useContext(ThemeModeContext);
+  const router = useRouter();
+  const { colors } = useTheme();
+
+  const handleLogout = () => {
+    auth?.logout();
+    router.replace("/login");
+  };
+
+  const isDark = themeMode?.mode === "dark";
 
   return (
     <ScreenContainer>
@@ -20,8 +36,41 @@ export default function SettingsScreen() {
         subtitle="Account & backup preferences"
       />
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Server</Text>
+      {/* Appearance */}
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        <Text style={[styles.cardTitle, { color: colors.text }]}>
+          Appearance
+        </Text>
+
+        <View style={styles.toggleRow}>
+          <View style={{ flex: 1, paddingRight: 8 }}>
+            <Text style={styles.settingsLabel}>Dark mode</Text>
+            <Text style={styles.settingsHint}>
+              Switch between light and dark theme.
+            </Text>
+          </View>
+          <Switch
+            value={isDark}
+            onValueChange={(value) =>
+              themeMode?.setMode(value ? "dark" : "light")
+            }
+          />
+        </View>
+      </View>
+
+      {/* Server */}
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        <Text style={[styles.cardTitle, { color: colors.text }]}>Server</Text>
         <Text style={styles.settingsLabel}>Server URL</Text>
         <Text style={styles.settingsValue}>
           https://photos.my-home-server.local
@@ -32,8 +81,14 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Backup</Text>
+      {/* Backup */}
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        <Text style={[styles.cardTitle, { color: colors.text }]}>Backup</Text>
 
         <View style={styles.toggleRow}>
           <View style={{ flex: 1, paddingRight: 8 }}>
@@ -62,13 +117,22 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Account</Text>
+      {/* Account */}
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: colors.card, borderColor: colors.border },
+        ]}
+      >
+        <Text style={[styles.cardTitle, { color: colors.text }]}>Account</Text>
         <Text style={styles.settingsLabel}>Logged in as</Text>
         <Text style={styles.settingsValue}>alex@example.com</Text>
 
-        <TouchableOpacity style={styles.secondaryButton}>
-          <Text style={styles.secondaryButtonText}>Log out (demo)</Text>
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={handleLogout}
+        >
+          <Text style={styles.secondaryButtonText}>Log out</Text>
         </TouchableOpacity>
       </View>
     </ScreenContainer>
@@ -77,7 +141,7 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: "#020617",
+    backgroundColor: "#020617", // overridden by useTheme
     borderRadius: 16,
     padding: 14,
     marginBottom: 12,

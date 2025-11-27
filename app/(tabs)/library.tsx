@@ -7,8 +7,6 @@ import React, {
 import {
   FlatList,
   Image,
-  Modal,
-  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -16,6 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import ImageViewing from "react-native-image-viewing";
 import { Header, ScreenContainer } from "./_components";
 
 type MediaType = "photo" | "video";
@@ -129,7 +128,9 @@ export default function LibraryScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
 
-  const [selectedItem, setSelectedItem] = useState<MediaItem | null>(null);
+  const [viewerVisible, setViewerVisible] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState(0);
+  const [viewerItems, setViewerItems] = useState<{ uri: string }[]>([]);
 
   // Apply filter
   const filteredMedia = useMemo(() => {
@@ -166,12 +167,17 @@ export default function LibraryScreen() {
     setSyncing(false);
   }, [handleRefresh]);
 
-  const handleItemPress = (item: MediaItem) => {
-    setSelectedItem(item);
-  };
+  const openViewer = (allItemsInGroup: MediaItem[], itemIndex: number) => {
+    // Only photos in viewer for now (videos could open a different player later)
+    const photosOnly = allItemsInGroup.filter((m) => m.type === "photo");
+    const clickedItem = allItemsInGroup[itemIndex];
 
-  const closeViewer = () => {
-    setSelectedItem(null);
+    let startIndex = photosOnly.findIndex((p) => p.id === clickedItem.id);
+    if (startIndex === -1) startIndex = 0;
+
+    setViewerItems(photosOnly.map((m) => ({ uri: m.uri })));
+    setViewerIndex(startIndex);
+    setViewerVisible(true);
   };
 
   return (
@@ -277,10 +283,10 @@ export default function LibraryScreen() {
                   numColumns={3}
                   scrollEnabled={false}
                   columnWrapperStyle={styles.gridRow}
-                  renderItem={({ item }) => (
+                  renderItem={({ item, index }) => (
                     <TouchableOpacity
                       style={styles.gridItem}
-                      onPress={() => handleItemPress(item)}
+                      onPress={() => openViewer(group.items, index)}
                       activeOpacity={0.8}
                     >
                       <Image
@@ -301,41 +307,16 @@ export default function LibraryScreen() {
         )}
       </ScreenContainer>
 
-      {/* Fullscreen viewer */}
-      <Modal
-        visible={!!selectedItem}
-        transparent
-        animationType="fade"
-        onRequestClose={closeViewer}
-      >
-        <View style={styles.modalBackdrop}>
-          <Pressable style={styles.modalBackdrop} onPress={closeViewer}>
-            {/* Block touches to background but allow them on content */}
-          </Pressable>
-
-          {selectedItem && (
-            <View style={styles.modalContent}>
-              <Image
-                source={{ uri: selectedItem.uri }}
-                style={styles.fullImage}
-                resizeMode="contain"
-              />
-              <View style={styles.modalTopBar}>
-                <Text style={styles.modalTitle}>
-                  {selectedItem.type === "video" ? "Video" : "Photo"} •{" "}
-                  {new Date(selectedItem.createdAt).toLocaleString()}
-                </Text>
-                <TouchableOpacity
-                  onPress={closeViewer}
-                  style={styles.closeButton}
-                >
-                  <Text style={styles.closeButtonText}>Close</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-        </View>
-      </Modal>
+      {/* Fullscreen viewer with zoom & swipe */}
+      <ImageViewing
+        images={viewerItems}
+        imageIndex={viewerIndex}
+        visible={viewerVisible}
+        onRequestClose={() => setViewerVisible(false)}
+        // optional:
+        presentationStyle="overFullScreen"
+        swipeToCloseEnabled={true}
+      />
     </>
   );
 }
@@ -454,47 +435,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: "#9ca3af",
     textAlign: "center",
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.85)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  modalContent: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingTop: 40,
-    paddingHorizontal: 12,
-    paddingBottom: 24,
-  },
-  fullImage: {
-    flex: 1,
-    width: "100%",
-  },
-  modalTopBar: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginTop: 8,
-  },
-  modalTitle: {
-    fontSize: 12,
-    color: "#e5e7eb",
-  },
-  closeButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#e5e7eb",
-  },
-  closeButtonText: {
-    fontSize: 12,
-    color: "#e5e7eb",
-    fontWeight: "500",
   },
 });
