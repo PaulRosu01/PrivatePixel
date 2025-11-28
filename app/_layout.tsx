@@ -6,7 +6,9 @@ import {
 } from "@react-navigation/native";
 import { Stack } from "expo-router";
 import React from "react";
-import "react-native-url-polyfill/auto"; // if you moved it here
+import "react-native-gesture-handler"; // 👈 important for gesture-handler
+import { GestureHandlerRootView } from "react-native-gesture-handler"; // 👈 new
+import "react-native-url-polyfill/auto";
 import { AuthProvider } from "./auth-context";
 import { ThemeModeContext, ThemeModeProvider } from "./theme-context";
 
@@ -39,26 +41,28 @@ const customLightTheme = {
 
 export default function RootLayout() {
   return (
-    <AuthProvider>
-      <ThemeModeProvider>
-        <ThemeModeContext.Consumer>
-          {(themeMode) => {
-            const navTheme =
-              themeMode?.mode === "light" ? customLightTheme : customDarkTheme;
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <AuthProvider>
+        <ThemeModeProvider>
+          <ThemeModeContext.Consumer>
+            {(themeMode) => {
+              const navTheme =
+                themeMode?.mode === "light" ? customLightTheme : customDarkTheme;
 
-            return (
-              <NavThemeProvider value={navTheme}>
-                <Stack screenOptions={{ headerShown: false }}>
-                  {/* index decides login vs tabs */}
-                  <Stack.Screen name="index" />
-                  <Stack.Screen name="login" />
-                  <Stack.Screen name="(tabs)" />
-                </Stack>
-              </NavThemeProvider>
-            );
-          }}
-        </ThemeModeContext.Consumer>
-      </ThemeModeProvider>
-    </AuthProvider>
+              return (
+                <NavThemeProvider value={navTheme}>
+                  <Stack screenOptions={{ headerShown: false }}>
+                    {/* index decides login vs tabs */}
+                    <Stack.Screen name="index" />
+                    <Stack.Screen name="login" />
+                    <Stack.Screen name="(tabs)" />
+                  </Stack>
+                </NavThemeProvider>
+              );
+            }}
+          </ThemeModeContext.Consumer>
+        </ThemeModeProvider>
+      </AuthProvider>
+    </GestureHandlerRootView>
   );
 }
