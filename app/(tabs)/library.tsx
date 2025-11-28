@@ -51,12 +51,25 @@ type MediaItem = {
 
 type AlbumId = "all" | "device" | "videos";
 
+type ManualAlbum = {
+  id: string;
+  title: string;
+  createdAt: string;
+  mediaIds: string[];
+};
+
 type AlbumInfo = {
-  id: AlbumId;
+  id: string;
   title: string;
   count: number;
   coverUri?: string;
+  kind: "smart" | "manual";
 };
+
+type ActiveAlbum =
+  | { kind: "smart"; id: AlbumId }
+  | { kind: "manual"; id: string }
+  | null;
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -296,7 +309,7 @@ const FullscreenViewer: React.FC<ViewerProps> = ({
         {/* Bottom metadata bar */}
         {current && (
           <View style={styles.viewerMetaBar}>
-            <Text numberOfLines={1} style={styles.viewerMetaText}>
+            <Text numberOfLines={2} style={styles.viewerMetaText}>
               {formatDateTime(current.createdAt)}
               {current.width && current.height
                 ? ` · ${current.width}×${current.height}`
@@ -318,8 +331,10 @@ export default function LibraryScreen() {
   const [media, setMedia] = useState<MediaItem[]>(initialMedia);
   const [filter, setFilter] =
     useState<"all" | "photos" | "videos">("all");
-  const [activeAlbumId, setActiveAlbumId] =
-    useState<AlbumId | null>(null);
+
+  const [manualAlbums, setManualAlbums] = useState<ManualAlbum[]>([]);
+  const [activeAlbum, setActiveAlbum] = useState<ActiveAlbum>(null);
+  const [albumEditMode, setAlbumEditMode] = useState(false);
 
   const [refreshing, setRefreshing] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -329,48 +344,69 @@ export default function LibraryScreen() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const [viewerItems, setViewerItems] = useState<MediaItem[]>([]);
 
-  // Smart albums derived from current media
+  // Find currently active manual album (if any)
+  const activeManualAlbum = useMemo(() => {
+    if (!activeAlbum || activeAlbum.kind !== "manual") return null;
+    return manualAlbums.find((a) => a.id === activeAlbum.id) ?? null;
+  }, [activeAlbum, manualAlbums]);
+
+  // Smart + manual albums (for UI)
   const albums = useMemo<AlbumInfo[]>(() => {
-    const mk = (
+    const result: AlbumInfo[] = [];
+
+    const smartMaker = (
       id: AlbumId,
       title: string,
       predicate: (m: MediaItem) => boolean
-    ): AlbumInfo | null => {
+    ) => {
       const items = media.filter(predicate);
-      if (!items.length) return null;
-      return {
+      if (!items.length) return;
+      result.push({
         id,
         title,
         count: items.length,
         coverUri: items[0].uri,
-      };
+        kind: "smart",
+      });
     };
 
-    const res: AlbumInfo[] = [];
-    const all = mk("all", "All media", () => true);
-    if (all) res.push(all);
+    smartMaker("all", "All media", () => true);
+    smartMaker("device", "From device", (m) => m.source === "device");
+    smartMaker("videos", "Videos", (m) => m.type === "video");
 
-    const device = mk(
-      "device",
-      "From device",
-      (m) => m.source === "device"
-    );
-    if (device) res.push(device);
+    // Manual albums
+    manualAlbums.forEach((album) => {
+      const items = media.filter((m) => album.mediaIds.includes(m.id));
+      result.push({
+        id: album.id,
+        title: album.title,
+        count: items.length,
+        coverUri: items[0]?.uri,
+        kind: "manual",
+      });
+    });
 
-    const videos = mk("videos", "Videos", (m) => m.type === "video");
-    if (videos) res.push(videos);
+    return result;
+  }, [media, manualAlbums]);
 
-    return res;
-  }, [media]);
-
-  // Apply album filter + type filter
+  // Media for timeline: album filter (except when editing manual album) + type filter
   const mediaForTimeline = useMemo(() => {
     let base = media;
 
-    if (activeAlbumId === "device") {
-      base = base.filter((m) => m.source === "device");
-    } else if (activeAlbumId === "videos") {
-      base = base.filter((m) => m.type === "video");
+    if (!albumEditMode && activeAlbum) {
+      if (activeAlbum.kind === "smart") {
+        if (activeAlbum.id === "device") {
+          base = base.filter((m) => m.source === "device");
+        } else if (activeAlbum.id === "videos") {
+          base = base.filter((m) => m.type === "video");
+        }
+        // "all" just means no extra filter
+      } else if (activeAlbum.kind === "manual") {
+        const album = manualAlbums.find((a) => a.id === activeAlbum.id);
+        if (album) {
+          base = base.filter((m) => album.mediaIds.includes(m.id));
+        }
+      }
     }
 
     if (filter === "photos") {
@@ -380,7 +416,7 @@ export default function LibraryScreen() {
     }
 
     return base;
-  }, [media, filter, activeAlbumId]);
+  }, [media, filter, activeAlbum, albumEditMode, manualAlbums]);
 
   const groups = useMemo(
     () => groupMedia(mediaForTimeline),
@@ -414,7 +450,7 @@ export default function LibraryScreen() {
     setSyncing(false);
   }, [handleRefresh]);
 
-  // Device scan (Tier 1 point 3 foundation, with metadata)
+  // Device scan
   const handleScanDevice = useCallback(async () => {
     if (Platform.OS === "web") {
       Alert.alert(
@@ -481,8 +517,68 @@ export default function LibraryScreen() {
     }
   }, []);
 
-  // Open fullscreen viewer (photos only)
-  const openViewer = (allItems: MediaItem[], index: number) => {
+  // Create a new manual album and enter edit mode
+  const handleCreateAlbum = () => {
+    const index = manualAlbums.length + 1;
+    const newAlbum: ManualAlbum = {
+      id: `manual-${Date.now()}`,
+      title: `Album ${index}`,
+      createdAt: new Date().toISOString(),
+      mediaIds: [],
+    };
+
+    setManualAlbums((prev) => [...prev, newAlbum]);
+    setActiveAlbum({ kind: "manual", id: newAlbum.id });
+    setAlbumEditMode(true);
+  };
+
+  // Toggle album selection (smart or manual)
+  const handlePressAlbum = (album: AlbumInfo) => {
+    setAlbumEditMode(false);
+
+    if (album.kind === "smart") {
+      const smartId = album.id as AlbumId;
+      if (smartId === "all") {
+        setActiveAlbum(null);
+      } else {
+        setActiveAlbum({ kind: "smart", id: smartId });
+      }
+    } else {
+      setActiveAlbum({ kind: "manual", id: album.id });
+    }
+  };
+
+  // Toggle album edit mode; only valid for manual albums
+  const toggleAlbumEditMode = () => {
+    if (!activeManualAlbum) return;
+    setAlbumEditMode((prev) => !prev);
+  };
+
+  // Toggle membership of a media item in active manual album
+  const toggleItemInActiveManualAlbum = (mediaId: string) => {
+    if (!activeManualAlbum) return;
+
+    setManualAlbums((prev) =>
+      prev.map((a) => {
+        if (a.id !== activeManualAlbum.id) return a;
+        const set = new Set(a.mediaIds);
+        if (set.has(mediaId)) set.delete(mediaId);
+        else set.add(mediaId);
+        return { ...a, mediaIds: Array.from(set) };
+      })
+    );
+  };
+
+  // Open fullscreen viewer OR toggle album membership (if editing)
+  const openItem = (allItems: MediaItem[], index: number) => {
+    const item = allItems[index];
+
+    if (albumEditMode && activeManualAlbum) {
+      toggleItemInActiveManualAlbum(item.id);
+      return;
+    }
+
+    // View photos only in fullscreen
     const photos = allItems.filter((i) => i.type === "photo");
     const clicked = allItems[index];
     let start = photos.findIndex((p) => p.id === clicked.id);
@@ -491,11 +587,6 @@ export default function LibraryScreen() {
     setViewerItems(photos);
     setViewerIndex(start);
     setViewerVisible(true);
-  };
-
-  const onPressAlbum = (id: AlbumId) => {
-    if (id === "all") setActiveAlbumId(null);
-    else setActiveAlbumId(id);
   };
 
   return (
@@ -509,7 +600,7 @@ export default function LibraryScreen() {
             <Text style={styles.cardTitle}>Filter & sources</Text>
           </View>
 
-          {/* Type filter (All / Photos / Videos) */}
+          {/* Type filter */}
           <View style={styles.segment}>
             {(["all", "photos", "videos"] as const).map((key) => (
               <TouchableOpacity
@@ -555,10 +646,19 @@ export default function LibraryScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Smart albums */}
+          {/* Albums row */}
           {albums.length > 0 && (
             <View style={styles.albumsSection}>
-              <Text style={styles.albumsTitle}>Albums (smart)</Text>
+              <View style={styles.albumsHeaderRow}>
+                <Text style={styles.albumsTitle}>Albums</Text>
+                <TouchableOpacity
+                  style={styles.albumsNewButton}
+                  onPress={handleCreateAlbum}
+                >
+                  <Text style={styles.albumsNewButtonText}>+ New album</Text>
+                </TouchableOpacity>
+              </View>
+
               <ScrollView
                 horizontal
                 showsHorizontalScrollIndicator={false}
@@ -566,16 +666,22 @@ export default function LibraryScreen() {
               >
                 {albums.map((album) => {
                   const isActive =
-                    (activeAlbumId === null && album.id === "all") ||
-                    activeAlbumId === album.id;
+                    (activeAlbum?.kind === "smart" &&
+                      album.kind === "smart" &&
+                      activeAlbum.id === album.id) ||
+                    (activeAlbum?.kind === "manual" &&
+                      album.kind === "manual" &&
+                      activeAlbum.id === album.id) ||
+                    (!activeAlbum && album.kind === "smart" && album.id === "all");
+
                   return (
                     <TouchableOpacity
-                      key={album.id}
+                      key={album.kind + "-" + album.id}
                       style={[
                         styles.albumCard,
                         isActive && styles.albumCardActive,
                       ]}
-                      onPress={() => onPressAlbum(album.id)}
+                      onPress={() => handlePressAlbum(album)}
                       activeOpacity={0.8}
                     >
                       {album.coverUri && (
@@ -588,10 +694,47 @@ export default function LibraryScreen() {
                       <Text style={styles.albumCount}>
                         {album.count} item{album.count === 1 ? "" : "s"}
                       </Text>
+                      {album.kind === "manual" && (
+                        <Text style={styles.albumBadgeManual}>Manual</Text>
+                      )}
                     </TouchableOpacity>
                   );
                 })}
               </ScrollView>
+            </View>
+          )}
+
+          {/* Album edit bar */}
+          {activeManualAlbum && (
+            <View style={styles.albumEditRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.albumEditTitle}>
+                  {albumEditMode
+                    ? `Edit "${activeManualAlbum.title}"`
+                    : `Album: ${activeManualAlbum.title}`}
+                </Text>
+                <Text style={styles.albumEditSubtitle}>
+                  {albumEditMode
+                    ? "Tap photos to add/remove from this album."
+                    : "Tap Edit to modify album contents."}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={toggleAlbumEditMode}
+                style={[
+                  styles.albumEditButton,
+                  albumEditMode && styles.albumEditButtonActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.albumEditButtonText,
+                    albumEditMode && styles.albumEditButtonTextActive,
+                  ]}
+                >
+                  {albumEditMode ? "Done" : "Edit album"}
+                </Text>
+              </TouchableOpacity>
             </View>
           )}
         </View>
@@ -623,28 +766,49 @@ export default function LibraryScreen() {
                   numColumns={3}
                   scrollEnabled={false}
                   columnWrapperStyle={styles.gridRow}
-                  renderItem={({ item, index }) => (
-                    <TouchableOpacity
-                      style={styles.gridItem}
-                      activeOpacity={0.8}
-                      onPress={() => openViewer(group.items, index)}
-                    >
-                      <Image
-                        source={{ uri: item.uri }}
-                        style={styles.gridImage}
-                      />
-                      {item.type === "video" && (
-                        <View style={styles.videoBadge}>
-                          <Text style={styles.videoBadgeIcon}>▶</Text>
-                        </View>
-                      )}
-                      {item.source === "device" && (
-                        <View style={styles.deviceBadge}>
-                          <Text style={styles.deviceBadgeText}>Device</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  )}
+                  renderItem={({ item, index }) => {
+                    const isInActiveManualAlbum =
+                      !!activeManualAlbum &&
+                      activeManualAlbum.mediaIds.includes(item.id);
+
+                    return (
+                      <TouchableOpacity
+                        style={[
+                          styles.gridItem,
+                          albumEditMode &&
+                            activeManualAlbum &&
+                            isInActiveManualAlbum &&
+                            styles.gridItemSelected,
+                        ]}
+                        activeOpacity={0.8}
+                        onPress={() => openItem(group.items, index)}
+                      >
+                        <Image
+                          source={{ uri: item.uri }}
+                          style={styles.gridImage}
+                        />
+                        {item.type === "video" && (
+                          <View style={styles.videoBadge}>
+                            <Text style={styles.videoBadgeIcon}>▶</Text>
+                          </View>
+                        )}
+                        {item.source === "device" && (
+                          <View style={styles.deviceBadge}>
+                            <Text style={styles.deviceBadgeText}>Device</Text>
+                          </View>
+                        )}
+                        {albumEditMode &&
+                          activeManualAlbum &&
+                          isInActiveManualAlbum && (
+                            <View style={styles.selectedOverlay}>
+                              <View style={styles.checkbox}>
+                                <Text style={styles.checkboxText}>✓</Text>
+                              </View>
+                            </View>
+                          )}
+                      </TouchableOpacity>
+                    );
+                  }}
                 />
               </View>
             ))}
@@ -687,6 +851,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#e5e7eb",
   },
+
   segment: {
     flexDirection: "row",
     borderRadius: 999,
@@ -712,6 +877,7 @@ const styles = StyleSheet.create({
     color: "#e5e7eb",
     fontWeight: "600",
   },
+
   actionsRow: {
     flexDirection: "row",
     gap: 8,
@@ -735,11 +901,28 @@ const styles = StyleSheet.create({
   albumsSection: {
     marginTop: 14,
   },
+  albumsHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 6,
+  },
   albumsTitle: {
     fontSize: 13,
     fontWeight: "600",
     color: "#e5e7eb",
-    marginBottom: 6,
+  },
+  albumsNewButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#38bdf8",
+  },
+  albumsNewButtonText: {
+    fontSize: 11,
+    color: "#38bdf8",
+    fontWeight: "600",
   },
   albumsScrollContent: {
     paddingVertical: 2,
@@ -774,6 +957,58 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingBottom: 6,
   },
+  albumBadgeManual: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    fontSize: 9,
+    color: "#e5e7eb",
+    backgroundColor: "rgba(15,23,42,0.8)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+
+  albumEditRow: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: "#020617",
+    borderWidth: 1,
+    borderColor: "#1f2933",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  albumEditTitle: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#e5e7eb",
+  },
+  albumEditSubtitle: {
+    fontSize: 11,
+    color: "#9ca3af",
+    marginTop: 2,
+  },
+  albumEditButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#4b5563",
+  },
+  albumEditButtonActive: {
+    borderColor: "#38bdf8",
+    backgroundColor: "#0f172a",
+  },
+  albumEditButtonText: {
+    fontSize: 11,
+    color: "#9ca3af",
+    fontWeight: "600",
+  },
+  albumEditButtonTextActive: {
+    color: "#38bdf8",
+  },
 
   // Timeline
   dateGroup: {
@@ -793,6 +1028,12 @@ const styles = StyleSheet.create({
     aspectRatio: 1,
     marginBottom: 4,
     marginHorizontal: 1,
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  gridItemSelected: {
+    borderWidth: 2,
+    borderColor: "#38bdf8",
   },
   gridImage: {
     flex: 1,
@@ -826,6 +1067,27 @@ const styles = StyleSheet.create({
     color: "#a5b4fc",
     fontWeight: "500",
   },
+  selectedOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15,23,42,0.45)",
+    justifyContent: "flex-start",
+    alignItems: "flex-end",
+    padding: 4,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "#38bdf8",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkboxText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#0f172a",
+  },
+
   emptyState: {
     marginTop: 40,
     paddingHorizontal: 20,
