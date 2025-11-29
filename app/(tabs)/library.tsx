@@ -19,6 +19,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View,
@@ -56,6 +57,7 @@ type ManualAlbum = {
   title: string;
   createdAt: string;
   mediaIds: string[];
+  coverMediaId?: string;
 };
 
 type AlbumInfo = {
@@ -344,6 +346,68 @@ export default function LibraryScreen() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const [viewerItems, setViewerItems] = useState<MediaItem[]>([]);
 
+  // Rename modal state
+  const [renameModalVisible, setRenameModalVisible] = useState(false);
+  const [renameText, setRenameText] = useState("");
+
+  // NEW: selection for fake upload
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [uploading, setUploading] = useState(false);
+
+  const clearSelection = () => {
+    setSelectedIds(() => new Set());
+  };
+
+  const toggleSelectItem = (mediaId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(mediaId)) next.delete(mediaId);
+      else next.add(mediaId);
+      return next;
+    });
+  };
+
+  const handleToggleSelectMode = () => {
+    if (selectMode) {
+      setSelectMode(false);
+      clearSelection();
+    } else {
+      // entering select mode -> disable album edit mode
+      setAlbumEditMode(false);
+      setSelectMode(true);
+    }
+  };
+
+  const handleFakeUpload = useCallback(async () => {
+    if (selectedIds.size === 0) {
+      Alert.alert("Nothing selected", "Select some media to upload first.");
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const delayMs = 700 + selectedIds.size * 200;
+      await new Promise((res) => setTimeout(res, delayMs));
+
+      Alert.alert(
+        "Upload complete (mock)",
+        `${selectedIds.size} item${
+          selectedIds.size === 1 ? "" : "s"
+        } uploaded to the server (fake).`
+      );
+    } catch (err) {
+      console.error(err);
+      Alert.alert("Error", "Something went wrong during upload (mock).");
+    } finally {
+      setUploading(false);
+      setSelectMode(false);
+      clearSelection();
+    }
+  }, [selectedIds]);
+
   // Find currently active manual album (if any)
   const activeManualAlbum = useMemo(() => {
     if (!activeAlbum || activeAlbum.kind !== "manual") return null;
@@ -354,7 +418,7 @@ export default function LibraryScreen() {
   const albums = useMemo<AlbumInfo[]>(() => {
     const result: AlbumInfo[] = [];
 
-    const smartMaker = (
+    const makeSmart = (
       id: AlbumId,
       title: string,
       predicate: (m: MediaItem) => boolean
@@ -370,18 +434,22 @@ export default function LibraryScreen() {
       });
     };
 
-    smartMaker("all", "All media", () => true);
-    smartMaker("device", "From device", (m) => m.source === "device");
-    smartMaker("videos", "Videos", (m) => m.type === "video");
+    makeSmart("all", "All media", () => true);
+    makeSmart("device", "From device", (m) => m.source === "device");
+    makeSmart("videos", "Videos", (m) => m.type === "video");
 
     // Manual albums
     manualAlbums.forEach((album) => {
-      const items = media.filter((m) => album.mediaIds.includes(m.id));
+      const coverMedia =
+        media.find((m) => m.id === album.coverMediaId) ??
+        media.find((m) => album.mediaIds.includes(m.id));
+      const count = album.mediaIds.length;
+
       result.push({
         id: album.id,
         title: album.title,
-        count: items.length,
-        coverUri: items[0]?.uri,
+        count,
+        coverUri: coverMedia?.uri,
         kind: "manual",
       });
     });
@@ -530,11 +598,17 @@ export default function LibraryScreen() {
     setManualAlbums((prev) => [...prev, newAlbum]);
     setActiveAlbum({ kind: "manual", id: newAlbum.id });
     setAlbumEditMode(true);
+    // creating album -> disable select mode and clear selection
+    setSelectMode(false);
+    clearSelection();
   };
 
   // Toggle album selection (smart or manual)
   const handlePressAlbum = (album: AlbumInfo) => {
     setAlbumEditMode(false);
+    // switching albums -> reset select mode & selection
+    setSelectMode(false);
+    clearSelection();
 
     if (album.kind === "smart") {
       const smartId = album.id as AlbumId;
@@ -551,7 +625,15 @@ export default function LibraryScreen() {
   // Toggle album edit mode; only valid for manual albums
   const toggleAlbumEditMode = () => {
     if (!activeManualAlbum) return;
-    setAlbumEditMode((prev) => !prev);
+    setAlbumEditMode((prev) => {
+      const next = !prev;
+      if (next) {
+        // entering album edit mode -> disable select mode
+        setSelectMode(false);
+        clearSelection();
+      }
+      return next;
+    });
   };
 
   // Toggle membership of a media item in active manual album
@@ -569,12 +651,83 @@ export default function LibraryScreen() {
     );
   };
 
-  // Open fullscreen viewer OR toggle album membership (if editing)
+  // Set cover for active manual album (also ensures membership)
+  const handleSetCoverForActiveAlbum = (mediaId: string) => {
+    if (!activeManualAlbum) return;
+
+    setManualAlbums((prev) =>
+      prev.map((a) => {
+        if (a.id !== activeManualAlbum.id) return a;
+        const set = new Set(a.mediaIds);
+        set.add(mediaId);
+        return {
+          ...a,
+          mediaIds: Array.from(set),
+          coverMediaId: mediaId,
+        };
+      })
+    );
+  };
+
+  // Rename album (open modal)
+  const handleStartRenameAlbum = () => {
+    if (!activeManualAlbum) return;
+    setRenameText(activeManualAlbum.title);
+    setRenameModalVisible(true);
+  };
+
+  const handleConfirmRenameAlbum = () => {
+    if (!activeManualAlbum) {
+      setRenameModalVisible(false);
+      return;
+    }
+    const trimmed = renameText.trim();
+    if (!trimmed) {
+      setRenameModalVisible(false);
+      return;
+    }
+    setManualAlbums((prev) =>
+      prev.map((a) =>
+        a.id === activeManualAlbum.id ? { ...a, title: trimmed } : a
+      )
+    );
+    setRenameModalVisible(false);
+  };
+
+  const handleDeleteAlbum = () => {
+    if (!activeManualAlbum) return;
+
+    Alert.alert(
+      "Delete album",
+      `Delete "${activeManualAlbum.title}"?\nPhotos will NOT be removed from your library.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            setManualAlbums((prev) =>
+              prev.filter((a) => a.id !== activeManualAlbum.id)
+            );
+            setActiveAlbum(null);
+            setAlbumEditMode(false);
+          },
+        },
+      ]
+    );
+  };
+
+  // Open fullscreen viewer OR toggle album membership / upload selection
   const openItem = (allItems: MediaItem[], index: number) => {
     const item = allItems[index];
 
     if (albumEditMode && activeManualAlbum) {
       toggleItemInActiveManualAlbum(item.id);
+      return;
+    }
+
+    if (selectMode) {
+      toggleSelectItem(item.id);
       return;
     }
 
@@ -646,6 +799,51 @@ export default function LibraryScreen() {
             </TouchableOpacity>
           </View>
 
+          {/* Select for upload */}
+          <View style={styles.selectRow}>
+            <TouchableOpacity
+              onPress={handleToggleSelectMode}
+              style={[
+                styles.selectToggleButton,
+                selectMode && styles.selectToggleButtonActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.selectToggleButtonText,
+                  selectMode && styles.selectToggleButtonTextActive,
+                ]}
+              >
+                {selectMode ? "Cancel selection" : "Select for upload"}
+              </Text>
+            </TouchableOpacity>
+
+            {selectMode && (
+              <View style={styles.selectStatusRow}>
+                <Text style={styles.selectStatusText}>
+                  {selectedIds.size} selected
+                </Text>
+                <TouchableOpacity
+                  onPress={handleFakeUpload}
+                  disabled={uploading || selectedIds.size === 0}
+                  style={[
+                    styles.uploadButton,
+                    (uploading || selectedIds.size === 0) &&
+                      styles.uploadButtonDisabled,
+                  ]}
+                >
+                  <Text style={styles.uploadButtonText}>
+                    {uploading
+                      ? "Uploading..."
+                      : selectedIds.size === 0
+                      ? "Upload"
+                      : `Upload ${selectedIds.size}`}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
           {/* Albums row */}
           {albums.length > 0 && (
             <View style={styles.albumsSection}>
@@ -672,7 +870,9 @@ export default function LibraryScreen() {
                     (activeAlbum?.kind === "manual" &&
                       album.kind === "manual" &&
                       activeAlbum.id === album.id) ||
-                    (!activeAlbum && album.kind === "smart" && album.id === "all");
+                    (!activeAlbum &&
+                      album.kind === "smart" &&
+                      album.id === "all");
 
                   return (
                     <TouchableOpacity
@@ -715,26 +915,46 @@ export default function LibraryScreen() {
                 </Text>
                 <Text style={styles.albumEditSubtitle}>
                   {albumEditMode
-                    ? "Tap photos to add/remove from this album."
+                    ? "Tap photos to add/remove. Long press a photo to set it as album cover."
                     : "Tap Edit to modify album contents."}
                 </Text>
               </View>
-              <TouchableOpacity
-                onPress={toggleAlbumEditMode}
-                style={[
-                  styles.albumEditButton,
-                  albumEditMode && styles.albumEditButtonActive,
-                ]}
-              >
-                <Text
+
+              <View style={styles.albumEditButtonsColumn}>
+                <TouchableOpacity
+                  onPress={toggleAlbumEditMode}
                   style={[
-                    styles.albumEditButtonText,
-                    albumEditMode && styles.albumEditButtonTextActive,
+                    styles.albumEditButton,
+                    albumEditMode && styles.albumEditButtonActive,
                   ]}
                 >
-                  {albumEditMode ? "Done" : "Edit album"}
-                </Text>
-              </TouchableOpacity>
+                  <Text
+                    style={[
+                      styles.albumEditButtonText,
+                      albumEditMode && styles.albumEditButtonTextActive,
+                    ]}
+                  >
+                    {albumEditMode ? "Done" : "Edit album"}
+                  </Text>
+                </TouchableOpacity>
+
+                <View style={styles.albumEditSecondaryRow}>
+                  <TouchableOpacity
+                    onPress={handleStartRenameAlbum}
+                    style={styles.albumEditSecondaryButton}
+                  >
+                    <Text style={styles.albumEditSecondaryText}>Rename</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleDeleteAlbum}
+                    style={styles.albumEditSecondaryButton}
+                  >
+                    <Text style={styles.albumEditSecondaryTextDestructive}>
+                      Delete
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
             </View>
           )}
         </View>
@@ -771,6 +991,13 @@ export default function LibraryScreen() {
                       !!activeManualAlbum &&
                       activeManualAlbum.mediaIds.includes(item.id);
 
+                    const isCover =
+                      !!activeManualAlbum &&
+                      activeManualAlbum.coverMediaId === item.id;
+
+                    const isSelectedForUpload =
+                      selectMode && selectedIds.has(item.id);
+
                     return (
                       <TouchableOpacity
                         style={[
@@ -779,9 +1006,15 @@ export default function LibraryScreen() {
                             activeManualAlbum &&
                             isInActiveManualAlbum &&
                             styles.gridItemSelected,
+                          isSelectedForUpload && styles.gridItemSelected,
                         ]}
                         activeOpacity={0.8}
                         onPress={() => openItem(group.items, index)}
+                        onLongPress={() => {
+                          if (albumEditMode && activeManualAlbum) {
+                            handleSetCoverForActiveAlbum(item.id);
+                          }
+                        }}
                       >
                         <Image
                           source={{ uri: item.uri }}
@@ -806,6 +1039,20 @@ export default function LibraryScreen() {
                               </View>
                             </View>
                           )}
+                        {albumEditMode &&
+                          activeManualAlbum &&
+                          isCover && (
+                            <View style={styles.coverBadge}>
+                              <Text style={styles.coverBadgeText}>Cover</Text>
+                            </View>
+                          )}
+                        {isSelectedForUpload && !albumEditMode && (
+                          <View style={styles.selectedOverlay}>
+                            <View style={styles.checkbox}>
+                              <Text style={styles.checkboxText}>↑</Text>
+                            </View>
+                          </View>
+                        )}
                       </TouchableOpacity>
                     );
                   }}
@@ -823,6 +1070,51 @@ export default function LibraryScreen() {
         visible={viewerVisible}
         onRequestClose={() => setViewerVisible(false)}
       />
+
+      {/* Rename album modal */}
+      <Modal
+        visible={renameModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRenameModalVisible(false)}
+      >
+        <View style={styles.renameModalBackdrop}>
+          <View style={styles.renameModalCard}>
+            <Text style={styles.renameModalTitle}>Rename album</Text>
+            <TextInput
+              value={renameText}
+              onChangeText={setRenameText}
+              placeholder="Album name"
+              placeholderTextColor="#6b7280"
+              style={styles.renameModalInput}
+            />
+            <View style={styles.renameModalButtonsRow}>
+              <TouchableOpacity
+                onPress={() => setRenameModalVisible(false)}
+                style={styles.renameModalButton}
+              >
+                <Text style={styles.renameModalButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleConfirmRenameAlbum}
+                style={[
+                  styles.renameModalButton,
+                  styles.renameModalButtonPrimary,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.renameModalButtonText,
+                    styles.renameModalButtonTextPrimary,
+                  ]}
+                >
+                  Save
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -892,6 +1184,56 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   actionButtonText: {
+    fontSize: 12,
+    color: "#38bdf8",
+    fontWeight: "600",
+  },
+
+  // Select / upload
+  selectRow: {
+    marginTop: 12,
+    gap: 8,
+  },
+  selectToggleButton: {
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#4b5563",
+    alignItems: "center",
+  },
+  selectToggleButtonActive: {
+    borderColor: "#38bdf8",
+    backgroundColor: "#0f172a",
+  },
+  selectToggleButtonText: {
+    fontSize: 12,
+    color: "#9ca3af",
+    fontWeight: "600",
+  },
+  selectToggleButtonTextActive: {
+    color: "#38bdf8",
+  },
+  selectStatusRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  selectStatusText: {
+    fontSize: 12,
+    color: "#9ca3af",
+  },
+  uploadButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#38bdf8",
+  },
+  uploadButtonDisabled: {
+    opacity: 0.5,
+  },
+  uploadButtonText: {
     fontSize: 12,
     color: "#38bdf8",
     fontWeight: "600",
@@ -990,6 +1332,9 @@ const styles = StyleSheet.create({
     color: "#9ca3af",
     marginTop: 2,
   },
+  albumEditButtonsColumn: {
+    gap: 6,
+  },
   albumEditButton: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -1008,6 +1353,27 @@ const styles = StyleSheet.create({
   },
   albumEditButtonTextActive: {
     color: "#38bdf8",
+  },
+  albumEditSecondaryRow: {
+    flexDirection: "row",
+    gap: 6,
+    justifyContent: "flex-end",
+  },
+  albumEditSecondaryButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "#020617",
+    borderWidth: 1,
+    borderColor: "#374151",
+  },
+  albumEditSecondaryText: {
+    fontSize: 11,
+    color: "#e5e7eb",
+  },
+  albumEditSecondaryTextDestructive: {
+    fontSize: 11,
+    color: "#f97373",
   },
 
   // Timeline
@@ -1087,6 +1453,20 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#0f172a",
   },
+  coverBadge: {
+    position: "absolute",
+    left: 4,
+    bottom: 4,
+    backgroundColor: "rgba(8,47,73,0.8)",
+    borderRadius: 999,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  coverBadgeText: {
+    fontSize: 10,
+    color: "#e0f2fe",
+    fontWeight: "600",
+  },
 
   emptyState: {
     marginTop: 40,
@@ -1159,5 +1539,65 @@ const styles = StyleSheet.create({
   viewerMetaText: {
     color: "white",
     fontSize: 12,
+  },
+
+  // Rename modal
+  renameModalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 24,
+  },
+  renameModalCard: {
+    width: "100%",
+    maxWidth: 360,
+    backgroundColor: "#020617",
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "#1f2933",
+  },
+  renameModalTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#e5e7eb",
+    marginBottom: 10,
+  },
+  renameModalInput: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#374151",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    color: "#e5e7eb",
+    fontSize: 14,
+    marginBottom: 14,
+    backgroundColor: "#020617",
+  },
+  renameModalButtonsRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+  },
+  renameModalButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#4b5563",
+    backgroundColor: "#020617",
+  },
+  renameModalButtonPrimary: {
+    borderColor: "#38bdf8",
+    backgroundColor: "#0f172a",
+  },
+  renameModalButtonText: {
+    fontSize: 13,
+    color: "#e5e7eb",
+  },
+  renameModalButtonTextPrimary: {
+    color: "#38bdf8",
+    fontWeight: "600",
   },
 });
