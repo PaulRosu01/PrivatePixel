@@ -2,10 +2,10 @@
 import * as MediaLibrary from "expo-media-library";
 import React, {
   useCallback,
-  useEffect,
   useMemo,
   useRef,
   useState,
+  useEffect,
 } from "react";
 import {
   Alert,
@@ -24,27 +24,29 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { Header, ScreenContainer } from "./_components";
-
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+
+import { Header, ScreenContainer } from "./_components";
+import { useAuth, NAS_BASE_URL } from "../auth-context";
 
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
 
 type MediaType = "photo" | "video";
+type MediaSource = "mock" | "device" | "server";
 
 type MediaItem = {
   id: string;
   uri: string;
   createdAt: string;
   type: MediaType;
-  source: "mock" | "device";
+  source: MediaSource;
   width?: number;
   height?: number;
   exif?: Record<string, any>;
@@ -88,8 +90,27 @@ function formatDateTime(iso: string) {
   return d.toLocaleString();
 }
 
+function detectTypeFromName(nameOrUrl: string): MediaType {
+  const lower = nameOrUrl.toLowerCase();
+  if (/\.(mp4|mov|m4v|avi|mkv|webm)$/i.test(lower)) return "video";
+  return "photo";
+}
+
+// Used to deduplicate device/server/mock copies of the same photo
+function buildDedupKey(item: MediaItem): string {
+  // Use createdAt (to the second) + resolution.
+  // Device + server copies share this if they represent the same asset.
+  const timePart = item.createdAt.slice(0, 19); // "YYYY-MM-DDTHH:MM:SS"
+  const sizePart =
+    item.width && item.height ? `${item.width}x${item.height}` : "";
+
+  return `${timePart}|${sizePart}`;
+}
+
+
+
 // -----------------------------------------------------------------------------
-// Demo Data
+// Demo data
 // -----------------------------------------------------------------------------
 
 const initialMedia: MediaItem[] = [
@@ -150,7 +171,7 @@ const initialMedia: MediaItem[] = [
 ];
 
 // -----------------------------------------------------------------------------
-// Grouping (Today / This week / Earlier)
+// Grouping helpers
 // -----------------------------------------------------------------------------
 
 type GroupKey = "Today" | "This week" | "Earlier";
@@ -178,7 +199,6 @@ function groupMedia(items: MediaItem[]): GroupedMedia[] {
 
   for (const item of items) {
     const created = new Date(item.createdAt);
-
     if (created >= todayStart) buckets["Today"].push(item);
     else if (created >= weekAgo) buckets["This week"].push(item);
     else buckets["Earlier"].push(item);
@@ -193,7 +213,7 @@ function groupMedia(items: MediaItem[]): GroupedMedia[] {
 }
 
 // -----------------------------------------------------------------------------
-// Zoomable Image (pinch only so FlatList can swipe)
+// Zoomable Image
 // -----------------------------------------------------------------------------
 
 const ZoomableImage = ({ uri }: { uri: string }) => {
@@ -204,8 +224,8 @@ const ZoomableImage = ({ uri }: { uri: string }) => {
     .onStart(() => {
       savedScale.value = scale.value;
     })
-    .onUpdate((e) => {
-      const next = savedScale.value * e.scale;
+    .onUpdate((event) => {
+      const next = savedScale.value * event.scale;
       scale.value = Math.min(Math.max(next, 1), 4);
     })
     .onEnd(() => {
@@ -230,7 +250,7 @@ const ZoomableImage = ({ uri }: { uri: string }) => {
 };
 
 // -----------------------------------------------------------------------------
-// Fullscreen Viewer with metadata + swipe
+// Fullscreen Viewer (swipe + zoom + metadata)
 // -----------------------------------------------------------------------------
 
 type ViewerProps = {
@@ -254,7 +274,6 @@ const FullscreenViewer: React.FC<ViewerProps> = ({
     if (!visible || !images.length) return;
     const clamped = Math.max(0, Math.min(imageIndex, images.length - 1));
     setCurrentIndex(clamped);
-
     requestAnimationFrame(() => {
       listRef.current?.scrollToIndex({
         index: clamped,
@@ -287,13 +306,18 @@ const FullscreenViewer: React.FC<ViewerProps> = ({
           style={{ flex: 1 }}
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
-            <View style={[styles.viewerPage, { width, height }]}>
+            <View
+              style={[
+                styles.viewerPage,
+                { width, height },
+              ]}
+            >
               <ZoomableImage uri={item.uri} />
             </View>
           )}
         />
 
-        {/* Top bar: Close + counter */}
+        {/* Top bar */}
         <View style={styles.viewerTopBar}>
           <TouchableOpacity
             onPress={onRequestClose}
@@ -308,7 +332,7 @@ const FullscreenViewer: React.FC<ViewerProps> = ({
           </View>
         </View>
 
-        {/* Bottom metadata bar */}
+        {/* Bottom metadata */}
         {current && (
           <View style={styles.viewerMetaBar}>
             <Text numberOfLines={2} style={styles.viewerMetaText}>
@@ -330,6 +354,8 @@ const FullscreenViewer: React.FC<ViewerProps> = ({
 // -----------------------------------------------------------------------------
 
 export default function LibraryScreen() {
+  const { token } = useAuth();
+
   const [media, setMedia] = useState<MediaItem[]>(initialMedia);
   const [filter, setFilter] =
     useState<"all" | "photos" | "videos">("all");
@@ -346,75 +372,24 @@ export default function LibraryScreen() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const [viewerItems, setViewerItems] = useState<MediaItem[]>([]);
 
-  // Rename modal state
   const [renameModalVisible, setRenameModalVisible] = useState(false);
   const [renameText, setRenameText] = useState("");
 
-  // NEW: selection for fake upload
+  // Selection + upload queue
   const [selectMode, setSelectMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(
-    () => new Set()
-  );
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [uploading, setUploading] = useState(false);
+  const [uploadTotal, setUploadTotal] = useState(0);
+  const [uploadIndex, setUploadIndex] = useState(0);
 
-  const clearSelection = () => {
-    setSelectedIds(() => new Set());
-  };
+  const selectedCount = selectedIds.size;
 
-  const toggleSelectItem = (mediaId: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(mediaId)) next.delete(mediaId);
-      else next.add(mediaId);
-      return next;
-    });
-  };
-
-  const handleToggleSelectMode = () => {
-    if (selectMode) {
-      setSelectMode(false);
-      clearSelection();
-    } else {
-      // entering select mode -> disable album edit mode
-      setAlbumEditMode(false);
-      setSelectMode(true);
-    }
-  };
-
-  const handleFakeUpload = useCallback(async () => {
-    if (selectedIds.size === 0) {
-      Alert.alert("Nothing selected", "Select some media to upload first.");
-      return;
-    }
-
-    setUploading(true);
-    try {
-      const delayMs = 700 + selectedIds.size * 200;
-      await new Promise((res) => setTimeout(res, delayMs));
-
-      Alert.alert(
-        "Upload complete (mock)",
-        `${selectedIds.size} item${
-          selectedIds.size === 1 ? "" : "s"
-        } uploaded to the server (fake).`
-      );
-    } catch (err) {
-      console.error(err);
-      Alert.alert("Error", "Something went wrong during upload (mock).");
-    } finally {
-      setUploading(false);
-      setSelectMode(false);
-      clearSelection();
-    }
-  }, [selectedIds]);
-
-  // Find currently active manual album (if any)
   const activeManualAlbum = useMemo(() => {
     if (!activeAlbum || activeAlbum.kind !== "manual") return null;
     return manualAlbums.find((a) => a.id === activeAlbum.id) ?? null;
   }, [activeAlbum, manualAlbums]);
 
-  // Smart + manual albums (for UI)
+  // Build albums list
   const albums = useMemo<AlbumInfo[]>(() => {
     const result: AlbumInfo[] = [];
 
@@ -438,7 +413,6 @@ export default function LibraryScreen() {
     makeSmart("device", "From device", (m) => m.source === "device");
     makeSmart("videos", "Videos", (m) => m.type === "video");
 
-    // Manual albums
     manualAlbums.forEach((album) => {
       const coverMedia =
         media.find((m) => m.id === album.coverMediaId) ??
@@ -457,41 +431,68 @@ export default function LibraryScreen() {
     return result;
   }, [media, manualAlbums]);
 
-  // Media for timeline: album filter (except when editing manual album) + type filter
+  // Media for timeline (album + filter + dedupe)
   const mediaForTimeline = useMemo(() => {
-    let base = media;
+  let base = media;
 
-    if (!albumEditMode && activeAlbum) {
-      if (activeAlbum.kind === "smart") {
-        if (activeAlbum.id === "device") {
-          base = base.filter((m) => m.source === "device");
-        } else if (activeAlbum.id === "videos") {
-          base = base.filter((m) => m.type === "video");
-        }
-        // "all" just means no extra filter
-      } else if (activeAlbum.kind === "manual") {
-        const album = manualAlbums.find((a) => a.id === activeAlbum.id);
-        if (album) {
-          base = base.filter((m) => album.mediaIds.includes(m.id));
-        }
+  // Album filter
+  if (!albumEditMode && activeAlbum) {
+    if (activeAlbum.kind === "smart") {
+      if (activeAlbum.id === "device") {
+        base = base.filter((m) => m.source === "device");
+      } else if (activeAlbum.id === "videos") {
+        base = base.filter((m) => m.type === "video");
+      }
+    } else if (activeAlbum.kind === "manual") {
+      const album = manualAlbums.find((a) => a.id === activeAlbum.id);
+      if (album) {
+        base = base.filter((m) => album.mediaIds.includes(m.id));
       }
     }
+  }
 
-    if (filter === "photos") {
-      base = base.filter((m) => m.type === "photo");
-    } else if (filter === "videos") {
-      base = base.filter((m) => m.type === "video");
+  // Type filter
+  if (filter === "photos") base = base.filter((m) => m.type === "photo");
+  if (filter === "videos") base = base.filter((m) => m.type === "video");
+
+  // 🔥 Dedupe device/server/mock duplicates by key
+  const priority = (source: MediaSource) => {
+    if (source === "server") return 3;
+    if (source === "device") return 2;
+    if (source === "mock") return 1;
+    return 0;
+  };
+
+  // Group items by dedup key
+  const buckets = new Map<string, MediaItem[]>();
+  for (const item of base) {
+    const key = buildDedupKey(item);
+    const arr = buckets.get(key);
+    if (arr) arr.push(item);
+    else buckets.set(key, [item]);
+  }
+
+  const deduped: MediaItem[] = [];
+  for (const items of buckets.values()) {
+    let best = items[0];
+    for (const item of items) {
+      if (priority(item.source) > priority(best.source)) {
+        best = item;
+      }
     }
+    deduped.push(best);
+  }
 
-    return base;
-  }, [media, filter, activeAlbum, albumEditMode, manualAlbums]);
+  return deduped;
+}, [media, filter, activeAlbum, albumEditMode, manualAlbums]);
+
 
   const groups = useMemo(
     () => groupMedia(mediaForTimeline),
     [mediaForTimeline]
   );
 
-  // Pull-to-refresh demo
+  // Pull-to-refresh (demo)
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await new Promise((res) => setTimeout(res, 700));
@@ -512,13 +513,79 @@ export default function LibraryScreen() {
     setRefreshing(false);
   }, []);
 
+  // Sync from NAS
+  const syncFromServer = useCallback(async () => {
+    if (!token) return;
+
+    try {
+      const res = await fetch(`${NAS_BASE_URL}/media`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        console.warn("Failed to fetch NAS media:", await res.text());
+        return;
+      }
+
+      const data: any[] = await res.json();
+
+      const serverItems: MediaItem[] = (data ?? []).map((item: any) => {
+        const url: string = item.url;
+        const baseName: string =
+          typeof item.id === "string" && item.id.length ? item.id : url;
+
+        const type = detectTypeFromName(baseName);
+
+        let createdAtIso = new Date().toISOString();
+        if (item.createdAt) {
+          try {
+            createdAtIso = new Date(item.createdAt).toISOString();
+          } catch {
+            // ignore parse error
+          }
+        }
+
+        return {
+          id: `server-${item.id}`,
+          uri: url,
+          createdAt: createdAtIso,
+          type,
+          source: "server",
+          width: item.width,
+          height: item.height,
+        };
+      });
+
+      setMedia((prev): MediaItem[] => {
+        const existingIds = new Set(prev.map((m) => m.id));
+        const merged = [...prev];
+        for (const item of serverItems) {
+          if (!existingIds.has(item.id)) {
+            merged.push(item);
+          }
+        }
+        return merged;
+      });
+    } catch (err) {
+      console.error("Error syncing NAS media", err);
+    }
+  }, [token]);
+
   const handleSyncClick = useCallback(async () => {
     setSyncing(true);
-    await handleRefresh();
+    await Promise.all([handleRefresh(), syncFromServer()]);
     setSyncing(false);
-  }, [handleRefresh]);
+  }, [handleRefresh, syncFromServer]);
 
-  // Device scan
+  // Auto-sync once when token appears
+  useEffect(() => {
+    if (!token) return;
+    syncFromServer();
+  }, [token, syncFromServer]);
+
+  // Scan device
   const handleScanDevice = useCallback(async () => {
     if (Platform.OS === "web") {
       Alert.alert(
@@ -529,7 +596,6 @@ export default function LibraryScreen() {
     }
 
     setScanningDevice(true);
-
     try {
       const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== "granted") {
@@ -585,7 +651,135 @@ export default function LibraryScreen() {
     }
   }, []);
 
-  // Create a new manual album and enter edit mode
+  // Selection
+  const toggleSelectMode = () => {
+    if (selectMode) setSelectedIds(new Set());
+    setSelectMode((prev) => !prev);
+  };
+
+  const toggleSelectItem = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // Upload one item to NAS
+  const uploadOneToNas = useCallback(
+    async (item: MediaItem): Promise<boolean> => {
+      try {
+        if (!token) {
+          Alert.alert(
+            "Not logged in",
+            "Please sign in before uploading to NAS."
+          );
+          return false;
+        }
+
+        if (item.source === "device" && Platform.OS !== "web") {
+          const formData = new FormData();
+
+          const file: any = {
+            uri: item.uri,
+            name:
+              (item.type === "video" ? "video-" : "photo-") +
+              item.id +
+              (item.type === "video" ? ".mp4" : ".jpg"),
+            type: item.type === "video" ? "video/mp4" : "image/jpeg",
+          };
+
+          // 👇 send original metadata to server
+          formData.append("takenAt", item.createdAt);
+          if (item.width != null) {
+            formData.append("width", String(item.width));
+          }
+          if (item.height != null) {
+            formData.append("height", String(item.height));
+          }
+
+          formData.append("file", file);
+
+          const res = await fetch(`${NAS_BASE_URL}/upload`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            body: formData,
+          });
+
+          if (!res.ok) {
+            console.warn("Upload failed", await res.text());
+            return false;
+          }
+
+          return true;
+        }
+
+        // For mock or web, simulate
+        await new Promise((res) => setTimeout(res, 400));
+        return true;
+      } catch (err) {
+        console.error("Upload error", err);
+        return false;
+      }
+    },
+    [token]
+  );
+
+  const handleUploadSelected = useCallback(async () => {
+    if (selectedCount === 0) {
+      Alert.alert("Nothing selected", "Select some items first.");
+      return;
+    }
+
+    const itemsToUpload = media.filter(
+      (m) => selectedIds.has(m.id) && m.source !== "server"
+    );
+
+    if (itemsToUpload.length === 0) {
+      Alert.alert(
+        "Already uploaded",
+        "All selected items are already on the server."
+      );
+      return;
+    }
+
+    setUploading(true);
+    setUploadTotal(itemsToUpload.length);
+    setUploadIndex(0);
+
+    let successCount = 0;
+
+    for (let i = 0; i < itemsToUpload.length; i++) {
+      setUploadIndex(i);
+      const item = itemsToUpload[i];
+
+      const ok = await uploadOneToNas(item);
+
+      if (ok) {
+        successCount++;
+        setMedia((prev) =>
+          prev.map((m) =>
+            m.id === item.id ? { ...m, source: "server" } : m
+          )
+        );
+      }
+    }
+
+    setUploading(false);
+    setSelectedIds(new Set());
+    setSelectMode(false);
+
+    Alert.alert(
+      "Upload complete",
+      `Uploaded ${successCount} of ${itemsToUpload.length} item(s) to NAS.`
+    );
+  }, [media, selectedCount, selectedIds, uploadOneToNas]);
+
+  // Manual albums
+
   const handleCreateAlbum = () => {
     const index = manualAlbums.length + 1;
     const newAlbum: ManualAlbum = {
@@ -594,49 +788,27 @@ export default function LibraryScreen() {
       createdAt: new Date().toISOString(),
       mediaIds: [],
     };
-
     setManualAlbums((prev) => [...prev, newAlbum]);
     setActiveAlbum({ kind: "manual", id: newAlbum.id });
     setAlbumEditMode(true);
-    // creating album -> disable select mode and clear selection
-    setSelectMode(false);
-    clearSelection();
   };
 
-  // Toggle album selection (smart or manual)
   const handlePressAlbum = (album: AlbumInfo) => {
     setAlbumEditMode(false);
-    // switching albums -> reset select mode & selection
-    setSelectMode(false);
-    clearSelection();
-
     if (album.kind === "smart") {
       const smartId = album.id as AlbumId;
-      if (smartId === "all") {
-        setActiveAlbum(null);
-      } else {
-        setActiveAlbum({ kind: "smart", id: smartId });
-      }
+      if (smartId === "all") setActiveAlbum(null);
+      else setActiveAlbum({ kind: "smart", id: smartId });
     } else {
       setActiveAlbum({ kind: "manual", id: album.id });
     }
   };
 
-  // Toggle album edit mode; only valid for manual albums
   const toggleAlbumEditMode = () => {
     if (!activeManualAlbum) return;
-    setAlbumEditMode((prev) => {
-      const next = !prev;
-      if (next) {
-        // entering album edit mode -> disable select mode
-        setSelectMode(false);
-        clearSelection();
-      }
-      return next;
-    });
+    setAlbumEditMode((prev) => !prev);
   };
 
-  // Toggle membership of a media item in active manual album
   const toggleItemInActiveManualAlbum = (mediaId: string) => {
     if (!activeManualAlbum) return;
 
@@ -651,7 +823,6 @@ export default function LibraryScreen() {
     );
   };
 
-  // Set cover for active manual album (also ensures membership)
   const handleSetCoverForActiveAlbum = (mediaId: string) => {
     if (!activeManualAlbum) return;
 
@@ -669,7 +840,6 @@ export default function LibraryScreen() {
     );
   };
 
-  // Rename album (open modal)
   const handleStartRenameAlbum = () => {
     if (!activeManualAlbum) return;
     setRenameText(activeManualAlbum.title);
@@ -717,7 +887,7 @@ export default function LibraryScreen() {
     );
   };
 
-  // Open fullscreen viewer OR toggle album membership / upload selection
+  // Opening photos
   const openItem = (allItems: MediaItem[], index: number) => {
     const item = allItems[index];
 
@@ -731,7 +901,6 @@ export default function LibraryScreen() {
       return;
     }
 
-    // View photos only in fullscreen
     const photos = allItems.filter((i) => i.type === "photo");
     const clicked = allItems[index];
     let start = photos.findIndex((p) => p.id === clicked.id);
@@ -742,18 +911,38 @@ export default function LibraryScreen() {
     setViewerVisible(true);
   };
 
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
   return (
     <>
       <ScreenContainer>
         <Header title="Library" subtitle="Timeline of backed up media" />
 
-        {/* Filters + actions */}
+        {/* Filters + actions + albums */}
         <View style={styles.card}>
           <View style={styles.cardHeaderRow}>
             <Text style={styles.cardTitle}>Filter & sources</Text>
+
+            <TouchableOpacity
+              onPress={toggleSelectMode}
+              style={[
+                styles.selectButton,
+                selectMode && styles.selectButtonActive,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.selectButtonText,
+                  selectMode && styles.selectButtonTextActive,
+                ]}
+              >
+                {selectMode ? "Cancel" : "Select"}
+              </Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Type filter */}
           <View style={styles.segment}>
             {(["all", "photos", "videos"] as const).map((key) => (
               <TouchableOpacity
@@ -776,7 +965,6 @@ export default function LibraryScreen() {
             ))}
           </View>
 
-          {/* Actions */}
           <View style={styles.actionsRow}>
             <TouchableOpacity
               onPress={handleSyncClick}
@@ -784,7 +972,7 @@ export default function LibraryScreen() {
               disabled={syncing}
             >
               <Text style={styles.actionButtonText}>
-                {syncing ? "Syncing..." : "Sync (demo)"}
+                {syncing ? "Syncing..." : "Sync (demo + NAS)"}
               </Text>
             </TouchableOpacity>
 
@@ -799,52 +987,7 @@ export default function LibraryScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Select for upload */}
-          <View style={styles.selectRow}>
-            <TouchableOpacity
-              onPress={handleToggleSelectMode}
-              style={[
-                styles.selectToggleButton,
-                selectMode && styles.selectToggleButtonActive,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.selectToggleButtonText,
-                  selectMode && styles.selectToggleButtonTextActive,
-                ]}
-              >
-                {selectMode ? "Cancel selection" : "Select for upload"}
-              </Text>
-            </TouchableOpacity>
-
-            {selectMode && (
-              <View style={styles.selectStatusRow}>
-                <Text style={styles.selectStatusText}>
-                  {selectedIds.size} selected
-                </Text>
-                <TouchableOpacity
-                  onPress={handleFakeUpload}
-                  disabled={uploading || selectedIds.size === 0}
-                  style={[
-                    styles.uploadButton,
-                    (uploading || selectedIds.size === 0) &&
-                      styles.uploadButtonDisabled,
-                  ]}
-                >
-                  <Text style={styles.uploadButtonText}>
-                    {uploading
-                      ? "Uploading..."
-                      : selectedIds.size === 0
-                      ? "Upload"
-                      : `Upload ${selectedIds.size}`}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-
-          {/* Albums row */}
+          {/* Albums */}
           {albums.length > 0 && (
             <View style={styles.albumsSection}>
               <View style={styles.albumsHeaderRow}>
@@ -904,7 +1047,6 @@ export default function LibraryScreen() {
             </View>
           )}
 
-          {/* Album edit bar */}
           {activeManualAlbum && (
             <View style={styles.albumEditRow}>
               <View style={{ flex: 1 }}>
@@ -915,7 +1057,7 @@ export default function LibraryScreen() {
                 </Text>
                 <Text style={styles.albumEditSubtitle}>
                   {albumEditMode
-                    ? "Tap photos to add/remove. Long press a photo to set it as album cover."
+                    ? "Tap photos to add/remove. Long press one to set cover."
                     : "Tap Edit to modify album contents."}
                 </Text>
               </View>
@@ -959,6 +1101,40 @@ export default function LibraryScreen() {
           )}
         </View>
 
+        {/* Upload queue */}
+        {(selectMode || uploading) && (
+          <View style={styles.uploadCard}>
+            <View style={styles.uploadRow}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.uploadTitle}>Upload to NAS</Text>
+                {!uploading ? (
+                  <Text style={styles.uploadSubtitle}>
+                    {selectedCount === 0
+                      ? "Select photos you want to back up."
+                      : `${selectedCount} item(s) selected.`}
+                  </Text>
+                ) : (
+                  <Text style={styles.uploadSubtitle}>
+                    Uploading {uploadIndex + 1} of {uploadTotal}...
+                  </Text>
+                )}
+              </View>
+              <TouchableOpacity
+                style={[
+                  styles.uploadButton,
+                  (selectedCount === 0 || uploading) && { opacity: 0.6 },
+                ]}
+                onPress={handleUploadSelected}
+                disabled={selectedCount === 0 || uploading}
+              >
+                <Text style={styles.uploadButtonText}>
+                  {uploading ? "Uploading..." : "Upload to NAS"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
         {/* Content */}
         {groups.length === 0 ? (
           <View style={styles.emptyState}>
@@ -990,13 +1166,10 @@ export default function LibraryScreen() {
                     const isInActiveManualAlbum =
                       !!activeManualAlbum &&
                       activeManualAlbum.mediaIds.includes(item.id);
-
                     const isCover =
                       !!activeManualAlbum &&
                       activeManualAlbum.coverMediaId === item.id;
-
-                    const isSelectedForUpload =
-                      selectMode && selectedIds.has(item.id);
+                    const isSelectedForUpload = selectedIds.has(item.id);
 
                     return (
                       <TouchableOpacity
@@ -1006,7 +1179,10 @@ export default function LibraryScreen() {
                             activeManualAlbum &&
                             isInActiveManualAlbum &&
                             styles.gridItemSelected,
-                          isSelectedForUpload && styles.gridItemSelected,
+                          !albumEditMode &&
+                            selectMode &&
+                            isSelectedForUpload &&
+                            styles.gridItemSelected,
                         ]}
                         activeOpacity={0.8}
                         onPress={() => openItem(group.items, index)}
@@ -1030,9 +1206,23 @@ export default function LibraryScreen() {
                             <Text style={styles.deviceBadgeText}>Device</Text>
                           </View>
                         )}
+                        {item.source === "server" && (
+                          <View style={styles.serverBadge}>
+                            <Text style={styles.serverBadgeText}>Server</Text>
+                          </View>
+                        )}
                         {albumEditMode &&
                           activeManualAlbum &&
                           isInActiveManualAlbum && (
+                            <View style={styles.selectedOverlay}>
+                              <View style={styles.checkbox}>
+                                <Text style={styles.checkboxText}>✓</Text>
+                              </View>
+                            </View>
+                          )}
+                        {!albumEditMode &&
+                          selectMode &&
+                          isSelectedForUpload && (
                             <View style={styles.selectedOverlay}>
                               <View style={styles.checkbox}>
                                 <Text style={styles.checkboxText}>✓</Text>
@@ -1046,13 +1236,6 @@ export default function LibraryScreen() {
                               <Text style={styles.coverBadgeText}>Cover</Text>
                             </View>
                           )}
-                        {isSelectedForUpload && !albumEditMode && (
-                          <View style={styles.selectedOverlay}>
-                            <View style={styles.checkbox}>
-                              <Text style={styles.checkboxText}>↑</Text>
-                            </View>
-                          </View>
-                        )}
                       </TouchableOpacity>
                     );
                   }}
@@ -1143,7 +1326,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     color: "#e5e7eb",
   },
-
   segment: {
     flexDirection: "row",
     borderRadius: 999,
@@ -1169,7 +1351,6 @@ const styles = StyleSheet.create({
     color: "#e5e7eb",
     fontWeight: "600",
   },
-
   actionsRow: {
     flexDirection: "row",
     gap: 8,
@@ -1188,58 +1369,58 @@ const styles = StyleSheet.create({
     color: "#38bdf8",
     fontWeight: "600",
   },
-
-  // Select / upload
-  selectRow: {
-    marginTop: 12,
-    gap: 8,
-  },
-  selectToggleButton: {
-    paddingVertical: 6,
+  selectButton: {
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "#4b5563",
-    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
   },
-  selectToggleButtonActive: {
+  selectButtonActive: {
     borderColor: "#38bdf8",
     backgroundColor: "#0f172a",
   },
-  selectToggleButtonText: {
-    fontSize: 12,
+  selectButtonText: {
+    fontSize: 11,
     color: "#9ca3af",
-    fontWeight: "600",
+    fontWeight: "500",
   },
-  selectToggleButtonTextActive: {
+  selectButtonTextActive: {
     color: "#38bdf8",
   },
-  selectStatusRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 8,
+  uploadCard: {
+    backgroundColor: "#020617",
+    padding: 14,
+    borderRadius: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#1f2933",
   },
-  selectStatusText: {
+  uploadRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  uploadTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#e5e7eb",
+  },
+  uploadSubtitle: {
     fontSize: 12,
     color: "#9ca3af",
+    marginTop: 2,
   },
   uploadButton: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#38bdf8",
-  },
-  uploadButtonDisabled: {
-    opacity: 0.5,
+    backgroundColor: "#38bdf8",
+    paddingVertical: 8,
+    paddingHorizontal: 12,
   },
   uploadButtonText: {
     fontSize: 12,
-    color: "#38bdf8",
     fontWeight: "600",
+    color: "#0f172a",
   },
-
-  // Albums
   albumsSection: {
     marginTop: 14,
   },
@@ -1310,7 +1491,6 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 999,
   },
-
   albumEditRow: {
     marginTop: 12,
     padding: 10,
@@ -1375,8 +1555,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: "#f97373",
   },
-
-  // Timeline
   dateGroup: {
     marginBottom: 16,
   },
@@ -1433,6 +1611,20 @@ const styles = StyleSheet.create({
     color: "#a5b4fc",
     fontWeight: "500",
   },
+  serverBadge: {
+    position: "absolute",
+    left: 4,
+    bottom: 4,
+    backgroundColor: "rgba(5,46,22,0.9)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  serverBadgeText: {
+    fontSize: 10,
+    color: "#bbf7d0",
+    fontWeight: "500",
+  },
   selectedOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "rgba(15,23,42,0.45)",
@@ -1467,7 +1659,6 @@ const styles = StyleSheet.create({
     color: "#e0f2fe",
     fontWeight: "600",
   },
-
   emptyState: {
     marginTop: 40,
     paddingHorizontal: 20,
@@ -1483,8 +1674,6 @@ const styles = StyleSheet.create({
     color: "#9ca3af",
     textAlign: "center",
   },
-
-  // Fullscreen viewer
   viewerBackdrop: {
     flex: 1,
     backgroundColor: "black",
@@ -1540,8 +1729,6 @@ const styles = StyleSheet.create({
     color: "white",
     fontSize: 12,
   },
-
-  // Rename modal
   renameModalBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.6)",

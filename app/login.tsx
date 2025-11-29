@@ -1,5 +1,5 @@
 // app/login.tsx
-import React, { useContext, useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   SafeAreaView,
   View,
@@ -11,64 +11,36 @@ import {
   Platform,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { AuthContext } from "./auth-context";
-
-
-import * as WebBrowser from "expo-web-browser";
-import * as Google from "expo-auth-session/providers/google";
-
-WebBrowser.maybeCompleteAuthSession();
+import { useAuth } from "./auth-context";
 
 export default function LoginScreen() {
-  const auth = useContext(AuthContext);
   const router = useRouter();
+  const { login, register, authLoading } = useAuth();
 
-  // Email/password (optional, you can remove later if you only want Google)
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("alex@example.com");
   const [password, setPassword] = useState("password123");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // --- Google auth setup ---
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    // Replace these with your real client IDs from Google Cloud Console
-    clientId: "252024811502-224ig6sb8ibbgmaeec70jp66j62j9lto.apps.googleusercontent.com"
-});
-
-  // Handle Google auth response
-  useEffect(() => {
-    if (response?.type === "success") {
-      const authResult = response.authentication;
-
-      // Here you could call your ASP.NET backend with authResult?.accessToken
-      // to create your own session / JWT.
-      // For now we just treat it as logged in.
-      auth?.login();
-      router.replace("/(tabs)");
-    }
-  }, [response, auth, router]);
-
-  const onLoginFake = async () => {
-    // If you want to temporarily keep the fake email/password login
+  const onSubmit = async () => {
     setError(null);
-    setLoading(true);
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      auth?.login();
-      router.replace("/(tabs)");
-    } catch (e) {
-      setError("Login failed. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  const onGooglePress = async () => {
-    setError(null);
+    if (!email || !password) {
+      setError("Please fill in both email and password.");
+      return;
+    }
+
     try {
-      await promptAsync();
-    } catch (e) {
-      setError("Google sign-in failed. Please try again.");
+      if (mode === "login") {
+        await login(email, password);
+      } else {
+        await register(email, password);
+      }
+
+      // After successful auth, let index.tsx redirect based on auth state.
+      router.replace("/"); // goes to index -> redirects to (tabs)
+    } catch (e: any) {
+      setError(e?.message || "Authentication failed. Please try again.");
     }
   };
 
@@ -89,9 +61,10 @@ export default function LoginScreen() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Sign in</Text>
+          <Text style={styles.cardTitle}>
+            {mode === "login" ? "Sign in" : "Create account"}
+          </Text>
 
-          {/* OPTIONAL: Keep or remove this block if you want email/password */}
           <Text style={styles.label}>Email</Text>
           <TextInput
             value={email}
@@ -116,46 +89,50 @@ export default function LoginScreen() {
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
           <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
-            onPress={onLoginFake}
-            disabled={loading}
+            style={[styles.button, authLoading && styles.buttonDisabled]}
+            onPress={onSubmit}
+            disabled={authLoading}
           >
             <Text style={styles.buttonText}>
-              {loading ? "Signing in..." : "Sign in (demo)"}
+              {authLoading
+                ? mode === "login"
+                  ? "Signing in..."
+                  : "Creating account..."
+                : mode === "login"
+                ? "Sign in"
+                : "Create account"}
             </Text>
           </TouchableOpacity>
 
-          {/* Divider */}
+          {/* Toggle login/register */}
           <View style={styles.dividerRow}>
             <View style={styles.dividerLine} />
             <Text style={styles.dividerText}>or</Text>
             <View style={styles.dividerLine} />
           </View>
 
-          {/* Google Sign-In */}
           <TouchableOpacity
-            style={[
-              styles.googleButton,
-              !request && { opacity: 0.6 },
-            ]}
-            onPress={onGooglePress}
-            disabled={!request}
+            style={styles.switchModeButton}
+            onPress={() =>
+              setMode((prev) => (prev === "login" ? "register" : "login"))
+            }
           >
-            <Text style={styles.googleIcon}>G</Text>
-            <Text style={styles.googleButtonText}>
-              Continue with Google
+            <Text style={styles.switchModeText}>
+              {mode === "login"
+                ? "Need an account? Create one"
+                : "Already have an account? Sign in"}
             </Text>
           </TouchableOpacity>
 
           <Text style={styles.hintText}>
-            Google sign-in uses expo-auth-session. In production, you should send
-            the Google token to your ASP.NET backend and create a local user/session.
+            Accounts are stored on your NAS backend. Each login gets its own
+            private folder for photo backups.
           </Text>
         </View>
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            Server: https://photos.my-home-server.local
+            Server: your Ubuntu NAS ({/* you can inject IP here later */})
           </Text>
         </View>
       </KeyboardAvoidingView>
@@ -267,27 +244,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#6b7280",
   },
-  googleButton: {
-    flexDirection: "row",
+  switchModeButton: {
     alignItems: "center",
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: "#334155",
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    justifyContent: "center",
-    backgroundColor: "#020617",
+    paddingVertical: 6,
   },
-  googleIcon: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#f97316",
-    marginRight: 8,
-  },
-  googleButtonText: {
-    fontSize: 14,
-    color: "#e5e7eb",
-    fontWeight: "500",
+  switchModeText: {
+    fontSize: 13,
+    color: "#9ca3af",
   },
   hintText: {
     marginTop: 10,
