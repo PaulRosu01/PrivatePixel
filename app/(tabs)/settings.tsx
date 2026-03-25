@@ -1,10 +1,12 @@
 // app/(tabs)/settings.tsx
 import { useTheme } from "@react-navigation/native";
+import * as MediaLibrary from "expo-media-library";
 import { useRouter } from "expo-router";
-import React, { useContext, useState } from "react";
+import React, { useContext, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   StyleSheet,
   Switch,
   Text,
@@ -16,10 +18,43 @@ import { NAS_BASE_URL, useAuth } from "../auth-context";
 import { ThemeModeContext } from "../theme-context";
 import { Header, ScreenContainer } from "./_components";
 
+type ServerMediaItem = {
+  id: string;
+  createdAt?: string;
+  width?: number;
+  height?: number;
+};
+
+type DeviceMediaItem = {
+  id: string;
+  uri: string;
+  createdAt: string;
+  width?: number;
+  height?: number;
+  type: "photo" | "video";
+};
+
+function buildDedupKey(input: {
+  createdAt: string;
+  width?: number;
+  height?: number;
+}) {
+  const timePart = String(input.createdAt || "").slice(0, 19);
+  const sizePart =
+    input.width && input.height ? `${input.width}x${input.height}` : "";
+  return `${timePart}|${sizePart}`;
+}
+
 export default function SettingsScreen() {
   const [wifiOnly, setWifiOnly] = useState(true);
   const [backupOnOpen, setBackupOnOpen] = useState(true);
   const [retryingTags, setRetryingTags] = useState(false);
+  const [runningBackup, setRunningBackup] = useState(false);
+  const [checkingServer, setCheckingServer] = useState(false);
+  const [serverOnline, setServerOnline] = useState<boolean | null>(null);
+  const [lastBackupSummary, setLastBackupSummary] = useState<string | null>(
+    null,
+  );
 
   const auth = useAuth();
   const themeMode = useContext(ThemeModeContext);
@@ -31,6 +66,222 @@ export default function SettingsScreen() {
   const handleLogout = () => {
     auth?.logout?.();
     router.replace("/login");
+  };
+
+  const checkServer = async () => {
+    if (!auth?.token) {
+      setServerOnline(null);
+      return;
+    }
+
+    try {
+      setCheckingServer(true);
+
+      const res = await fetch(`${NAS_BASE_URL}/media`, {
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+        },
+      });
+
+      setServerOnline(res.ok);
+    } catch (err) {
+      console.warn("Server check failed:", err);
+      setServerOnline(false);
+    } finally {
+      setCheckingServer(false);
+    }
+  };
+
+  useEffect(() => {
+    checkServer();
+  }, [auth?.token]);
+
+  const scanDeviceMedia = async (): Promise<DeviceMediaItem[]> => {
+    if (Platform.OS === "web") {
+      return [];
+    }
+
+    const { status } = await MediaLibrary.requestPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "We need access to your photos.");
+      return [];
+    }
+
+    const assets = await MediaLibrary.getAssetsAsync({
+      mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+      first: 1000,
+      sortBy: [MediaLibrary.SortBy.creationTime],
+    });
+
+    const items: DeviceMediaItem[] = await Promise.all(
+      assets.assets.map(async (a): Promise<DeviceMediaItem> => {
+        const info = await MediaLibrary.getAssetInfoAsync(a);
+
+        return {
+          id: `device-${a.id}`,
+          uri: info.localUri ?? a.uri,
+          createdAt: new Date(a.creationTime ?? Date.now()).toISOString(),
+          type:
+            a.mediaType === MediaLibrary.MediaType.video ? "video" : "photo",
+          width: info.width ?? (a as any).width,
+          height: info.height ?? (a as any).height,
+        };
+      }),
+    );
+
+    return items;
+  };
+
+  const fetchServerMedia = async (): Promise<ServerMediaItem[]> => {
+    if (!auth?.token) return [];
+
+    const res = await fetch(`${NAS_BASE_URL}/media`, {
+      headers: {
+        Authorization: `Bearer ${auth.token}`,
+      },
+    });
+
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  };
+
+  const uploadOneToNas = async (item: DeviceMediaItem): Promise<boolean> => {
+    try {
+      if (!auth?.token) {
+        Alert.alert("Not logged in", "Please sign in before uploading.");
+        return false;
+      }
+
+      if (!item.uri) {
+        console.warn("Missing local uri for item", item.id);
+        return false;
+      }
+
+      const formData = new FormData();
+
+      const file: any = {
+        uri: item.uri,
+        name:
+          (item.type === "video" ? "video-" : "photo-") +
+          item.id +
+          (item.type === "video" ? ".mp4" : ".jpg"),
+        type: item.type === "video" ? "video/mp4" : "image/jpeg",
+      };
+
+      formData.append("takenAt", item.createdAt);
+
+      if (item.width != null) {
+        formData.append("width", String(item.width));
+      }
+      if (item.height != null) {
+        formData.append("height", String(item.height));
+      }
+
+      formData.append("file", file);
+
+      const res = await fetch(`${NAS_BASE_URL}/upload`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${auth.token}`,
+        },
+        body: formData,
+      });
+
+      if (!res.ok) {
+        console.warn("Upload failed:", await res.text());
+        return false;
+      }
+
+      return true;
+    } catch (err) {
+      console.error("Upload error:", err);
+      return false;
+    }
+  };
+
+  const handleBackupNow = async () => {
+    if (!auth?.token) {
+      Alert.alert("Not logged in", "Please sign in before starting backup.");
+      return;
+    }
+
+    if (Platform.OS === "web") {
+      Alert.alert(
+        "Not available on web",
+        "Backup now from Settings currently works on iOS/Android. On web, use the Library upload flow.",
+      );
+      return;
+    }
+
+    try {
+      setRunningBackup(true);
+
+      const [deviceItems, serverItems] = await Promise.all([
+        scanDeviceMedia(),
+        fetchServerMedia(),
+      ]);
+
+      const serverKeySet = new Set(
+        serverItems.map((item) =>
+          buildDedupKey({
+            createdAt: item.createdAt || "",
+            width: item.width,
+            height: item.height,
+          }),
+        ),
+      );
+
+      const missingDeviceItems = deviceItems.filter((item) => {
+        const key = buildDedupKey(item);
+        return !serverKeySet.has(key);
+      });
+
+      if (!missingDeviceItems.length) {
+        setLastBackupSummary("Everything from Device is already on Server.");
+        Alert.alert(
+          "Already backed up",
+          "Everything from Device is already on Server.",
+        );
+        return;
+      }
+
+      let successCount = 0;
+
+      for (const item of missingDeviceItems) {
+        const ok = await uploadOneToNas(item);
+        if (ok) successCount++;
+      }
+
+      const photoCount = missingDeviceItems.filter(
+        (item) => item.type === "photo",
+      ).length;
+      const videoCount = missingDeviceItems.filter(
+        (item) => item.type === "video",
+      ).length;
+
+      setLastBackupSummary(
+        `Uploaded ${successCount} of ${missingDeviceItems.length} missing items (${photoCount} photos, ${videoCount} videos).`,
+      );
+
+      await checkServer();
+
+      Alert.alert(
+        "Backup finished",
+        `Uploaded ${successCount} of ${missingDeviceItems.length} missing item(s).`,
+      );
+    } catch (error: any) {
+      console.error("Backup failed:", error);
+      Alert.alert(
+        "Backup failed",
+        error?.message || "Something went wrong while backing up.",
+      );
+    } finally {
+      setRunningBackup(false);
+    }
   };
 
   const handleRetryAiTagging = async () => {
@@ -69,6 +320,17 @@ export default function SettingsScreen() {
     }
   };
 
+  const serverStatusText = useMemo(() => {
+    if (checkingServer) return "Checking";
+    if (serverOnline === null) return "Unknown";
+    return serverOnline ? "Connected" : "Offline";
+  }, [checkingServer, serverOnline]);
+
+  const serverStatusColor = useMemo(() => {
+    if (checkingServer || serverOnline === null) return "#9ca3af";
+    return serverOnline ? "#16a34a" : "#ef4444";
+  }, [checkingServer, serverOnline]);
+
   return (
     <ScreenContainer>
       <Header
@@ -76,7 +338,6 @@ export default function SettingsScreen() {
         subtitle="Account, server & backup preferences"
       />
 
-      {/* Appearance */}
       <View
         style={[
           styles.card,
@@ -103,7 +364,6 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      {/* Server */}
       <View
         style={[
           styles.card,
@@ -115,13 +375,33 @@ export default function SettingsScreen() {
         <Text style={styles.settingsLabel}>Server URL</Text>
         <Text style={styles.settingsValue}>{NAS_BASE_URL}</Text>
 
-        <View style={styles.pillStatus}>
-          <Text style={styles.pillDot}>●</Text>
-          <Text style={styles.pillText}>Connected</Text>
+        <View
+          style={[
+            styles.pillStatus,
+            {
+              backgroundColor: serverOnline
+                ? "rgba(22,163,74,0.15)"
+                : "rgba(239,68,68,0.15)",
+            },
+          ]}
+        >
+          <Text style={[styles.pillDot, { color: serverStatusColor }]}>●</Text>
+          <Text style={[styles.pillText, { color: serverStatusColor }]}>
+            {serverStatusText}
+          </Text>
         </View>
+
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={checkServer}
+          disabled={checkingServer}
+        >
+          <Text style={styles.secondaryButtonText}>
+            {checkingServer ? "Checking..." : "Check server again"}
+          </Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Backup */}
       <View
         style={[
           styles.card,
@@ -149,6 +429,25 @@ export default function SettingsScreen() {
           </View>
           <Switch value={wifiOnly} onValueChange={setWifiOnly} />
         </View>
+
+        <TouchableOpacity
+          style={[styles.primaryButton, runningBackup && styles.buttonDisabled]}
+          onPress={handleBackupNow}
+          disabled={runningBackup}
+        >
+          {runningBackup ? (
+            <View style={styles.buttonContentRow}>
+              <ActivityIndicator size="small" color="#0f172a" />
+              <Text style={styles.primaryButtonText}>Backing up...</Text>
+            </View>
+          ) : (
+            <Text style={styles.primaryButtonText}>Backup now</Text>
+          )}
+        </TouchableOpacity>
+
+        {lastBackupSummary ? (
+          <Text style={styles.summaryText}>{lastBackupSummary}</Text>
+        ) : null}
 
         <View style={styles.sectionDivider} />
 
@@ -180,7 +479,6 @@ export default function SettingsScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Account */}
       <View
         style={[
           styles.card,
@@ -244,6 +542,19 @@ const styles = StyleSheet.create({
     marginTop: 14,
     marginBottom: 4,
   },
+  primaryButton: {
+    marginTop: 14,
+    backgroundColor: "#38bdf8",
+    paddingVertical: 10,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  primaryButtonText: {
+    color: "#0f172a",
+    fontWeight: "600",
+    fontSize: 14,
+  },
   secondaryButton: {
     marginTop: 14,
     paddingVertical: 10,
@@ -273,16 +584,19 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     paddingHorizontal: 8,
     paddingVertical: 4,
-    backgroundColor: "rgba(22,163,74,0.15)",
     marginTop: 8,
   },
   pillDot: {
-    color: "#16a34a",
     fontSize: 11,
     marginRight: 4,
   },
   pillText: {
-    color: "#16a34a",
     fontSize: 11,
+  },
+  summaryText: {
+    marginTop: 10,
+    fontSize: 12,
+    color: "#9ca3af",
+    lineHeight: 18,
   },
 });
