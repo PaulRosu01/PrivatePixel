@@ -53,6 +53,12 @@ type MediaItem = {
   file?: File;
   originalFileName?: string;
   mimeType?: string;
+
+  // AI tagging
+  tags?: string[];
+  tagStatus?: "pending" | "done" | "error" | "none";
+  taggedAt?: string;
+  tagModel?: string;
 };
 
 type AlbumId = "all" | "device" | "videos" | "favorites";
@@ -81,6 +87,45 @@ type ActiveAlbum =
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
+
+function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
+
+function matchesSearch(item: MediaItem, rawQuery: string): boolean {
+  const query = normalizeText(rawQuery);
+  if (!query) return true;
+
+  const tokens = query.split(/\s+/).filter(Boolean);
+
+  const tagStatusWords =
+    item.tagStatus === "pending"
+      ? "pending tagging processing"
+      : item.tagStatus === "error"
+        ? "error failed tagging"
+        : (item.tags?.length ?? 0) > 0
+          ? "tagged ai"
+          : "untagged";
+
+  const haystack = normalizeText(
+    [
+      item.originalFileName || "",
+      item.source || "",
+      item.type || "",
+      item.favorite ? "favorite favorit liked heart starred" : "",
+      new Date(item.createdAt).toLocaleDateString(),
+      new Date(item.createdAt).toLocaleTimeString(),
+      ...(item.tags || []),
+      tagStatusWords,
+    ].join(" "),
+  );
+
+  return tokens.every((token) => haystack.includes(token));
+}
 
 function isHeicLikeFile(file: File): boolean {
   const type = (file.type || "").toLowerCase();
@@ -550,21 +595,8 @@ export default function LibraryScreen() {
     if (filter === "videos") base = base.filter((m) => m.type === "video");
 
     // Search filter (Step 9)
-    const q = searchQuery.trim().toLowerCase();
-    if (q.length > 0) {
-      base = base.filter((m) => {
-        const d = new Date(m.createdAt);
-        const text = [
-          d.toLocaleDateString(),
-          d.toLocaleTimeString(),
-          m.source,
-          m.type,
-          m.favorite ? "favorite" : "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        return text.includes(q);
-      });
+    if (searchQuery.trim().length > 0) {
+      base = base.filter((m) => matchesSearch(m, searchQuery));
     }
 
     // 🔥 Dedupe device/server/mock duplicates by key
@@ -660,11 +692,18 @@ export default function LibraryScreen() {
         return {
           id: `server-${item.id}`,
           uri: url,
-          createdAt: createdAtIso,
+          createdAt: item.originalCreatedAt
+            ? new Date(item.originalCreatedAt).toISOString()
+            : createdAtIso,
           type,
           source: "server",
           width: item.width,
           height: item.height,
+          tags: Array.isArray(item.tags) ? item.tags : [],
+          tagStatus: item.tagStatus ?? "none",
+          taggedAt: item.taggedAt,
+          tagModel: item.tagModel,
+          originalFileName: item.originalFileName || item.filename || item.id,
         };
       });
 
