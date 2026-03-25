@@ -2,10 +2,10 @@
 import * as MediaLibrary from "expo-media-library";
 import React, {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
-  useEffect,
 } from "react";
 import {
   Alert,
@@ -23,15 +23,15 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
 
+import { NAS_BASE_URL, useAuth } from "../auth-context";
 import { Header, ScreenContainer } from "./_components";
-import { useAuth, NAS_BASE_URL } from "../auth-context";
 
 // -----------------------------------------------------------------------------
 // Types
@@ -50,6 +50,9 @@ type MediaItem = {
   height?: number;
   exif?: Record<string, any>;
   favorite?: boolean;
+  file?: File;
+  originalFileName?: string;
+  mimeType?: string;
 };
 
 type AlbumId = "all" | "device" | "videos" | "favorites";
@@ -78,6 +81,38 @@ type ActiveAlbum =
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
+
+function isHeicLikeFile(file: File): boolean {
+  const type = (file.type || "").toLowerCase();
+  const name = (file.name || "").toLowerCase();
+
+  return (
+    type.includes("heic") ||
+    type.includes("heif") ||
+    name.endsWith(".heic") ||
+    name.endsWith(".heif")
+  );
+}
+
+async function convertHeicToJpeg(file: File): Promise<File> {
+  const heic2any = (await import("heic2any")).default;
+
+  const converted = await heic2any({
+    blob: file,
+    toType: "image/jpeg",
+    quality: 0.9,
+  });
+
+  const outputBlob = Array.isArray(converted) ? converted[0] : converted;
+
+  const safeBaseName = file.name.replace(/\.(heic|heif)$/i, "");
+  const jpegName = `${safeBaseName}.jpg`;
+
+  return new File([outputBlob as BlobPart], jpegName, {
+    type: "image/jpeg",
+    lastModified: file.lastModified || Date.now(),
+  });
+}
 
 function daysAgo(n: number) {
   const d = new Date();
@@ -181,11 +216,7 @@ type GroupedMedia = {
 
 function groupMedia(items: MediaItem[]): GroupedMedia[] {
   const now = new Date();
-  const todayStart = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate()
-  );
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const weekAgo = new Date(todayStart);
   weekAgo.setDate(weekAgo.getDate() - 7);
 
@@ -309,44 +340,40 @@ const FullscreenViewer: React.FC<ViewerProps> = ({
     <View style={styles.viewerBackdropOuter}>
       <View style={styles.viewerBackdrop}>
         <FlatList
-  ref={listRef}
-  data={images}
-  horizontal
-  pagingEnabled
-  showsHorizontalScrollIndicator={false}
-  onMomentumScrollEnd={onMomentumEnd}
-  style={{ flex: 1 }}
-  keyExtractor={(item) => item.id}
-  renderItem={({ item }) => (
-    <View
-      style={[
-        styles.viewerPage,
-        { width, height },
-      ]}
-    >
-      <ZoomableImage uri={item.uri} />
-    </View>
-  )}
-  // 👇 Tell FlatList how big each page is
-  getItemLayout={(_, index) => ({
-    length: width,
-    offset: width * index,
-    index,
-  })}
-  // 👇 Retry if it fails to scroll on the first attempt
-  onScrollToIndexFailed={(info) => {
-    const wait = new Promise<void>((resolve) => setTimeout(resolve, 50));
-    wait.then(() => {
-      if (listRef.current) {
-        listRef.current.scrollToIndex({
-          index: info.index,
-          animated: false,
-        });
-      }
-    });
-  }}
-/>
-
+          ref={listRef}
+          data={images}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          onMomentumScrollEnd={onMomentumEnd}
+          style={{ flex: 1 }}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <View style={[styles.viewerPage, { width, height }]}>
+              <ZoomableImage uri={item.uri} />
+            </View>
+          )}
+          // 👇 Tell FlatList how big each page is
+          getItemLayout={(_, index) => ({
+            length: width,
+            offset: width * index,
+            index,
+          })}
+          // 👇 Retry if it fails to scroll on the first attempt
+          onScrollToIndexFailed={(info) => {
+            const wait = new Promise<void>((resolve) =>
+              setTimeout(resolve, 50),
+            );
+            wait.then(() => {
+              if (listRef.current) {
+                listRef.current.scrollToIndex({
+                  index: info.index,
+                  animated: false,
+                });
+              }
+            });
+          }}
+        />
 
         {/* Top bar */}
         <View style={styles.viewerTopBar}>
@@ -376,16 +403,14 @@ const FullscreenViewer: React.FC<ViewerProps> = ({
             )}
 
             {/* Delete from NAS (only for server items) */}
-            {current &&
-              current.source === "server" &&
-              onDeleteCurrent && (
-                <TouchableOpacity
-                  onPress={handleDeletePress}
-                  style={styles.viewerDeleteButton}
-                >
-                  <Text style={styles.viewerDeleteText}>Delete</Text>
-                </TouchableOpacity>
-              )}
+            {current && current.source === "server" && onDeleteCurrent && (
+              <TouchableOpacity
+                onPress={handleDeletePress}
+                style={styles.viewerDeleteButton}
+              >
+                <Text style={styles.viewerDeleteText}>Delete</Text>
+              </TouchableOpacity>
+            )}
 
             <View style={styles.viewerCounter}>
               <Text style={styles.viewerCounterText}>
@@ -421,8 +446,7 @@ export default function LibraryScreen() {
   const { token } = useAuth();
 
   const [media, setMedia] = useState<MediaItem[]>(initialMedia);
-  const [filter, setFilter] =
-    useState<"all" | "photos" | "videos">("all");
+  const [filter, setFilter] = useState<"all" | "photos" | "videos">("all");
 
   const [manualAlbums, setManualAlbums] = useState<ManualAlbum[]>([]);
   const [activeAlbum, setActiveAlbum] = useState<ActiveAlbum>(null);
@@ -463,7 +487,7 @@ export default function LibraryScreen() {
     const makeSmart = (
       id: AlbumId,
       title: string,
-      predicate: (m: MediaItem) => boolean
+      predicate: (m: MediaItem) => boolean,
     ) => {
       const items = media.filter(predicate);
       if (!items.length) return;
@@ -572,18 +596,11 @@ export default function LibraryScreen() {
     }
 
     return deduped;
-  }, [
-    media,
-    filter,
-    activeAlbum,
-    albumEditMode,
-    manualAlbums,
-    searchQuery,
-  ]);
+  }, [media, filter, activeAlbum, albumEditMode, manualAlbums, searchQuery]);
 
   const groups = useMemo(
     () => groupMedia(mediaForTimeline),
-    [mediaForTimeline]
+    [mediaForTimeline],
   );
 
   // Pull-to-refresh (demo)
@@ -594,8 +611,7 @@ export default function LibraryScreen() {
     const newItem: MediaItem = {
       id: String(Date.now()),
       uri:
-        "https://picsum.photos/400?random=" +
-        Math.floor(Math.random() * 5000),
+        "https://picsum.photos/400?random=" + Math.floor(Math.random() * 5000),
       createdAt: new Date().toISOString(),
       type: Math.random() > 0.7 ? "video" : "photo",
       source: "mock",
@@ -681,30 +697,85 @@ export default function LibraryScreen() {
 
   // Scan device
   const handleScanDevice = useCallback(async () => {
+    // 🌐 Web: open file picker instead of MediaLibrary
     if (Platform.OS === "web") {
-      Alert.alert(
-        "Not supported",
-        "Device scanning only works on iOS/Android."
-      );
+      if (typeof document === "undefined") {
+        console.warn("document is not available on web?");
+        return;
+      }
+
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.accept = "image/*,video/*,.heic,.heif";
+
+      input.onchange = async () => {
+        const files = Array.from(input.files ?? []);
+
+        if (!files.length) return;
+
+        try {
+          const processedItems = await Promise.all(
+            files.map(async (file, index) => {
+              let finalFile = file;
+
+              if (isHeicLikeFile(file)) {
+                try {
+                  finalFile = await convertHeicToJpeg(file);
+                } catch (err) {
+                  console.warn(
+                    "HEIC conversion failed, keeping original file",
+                    err,
+                  );
+                }
+              }
+
+              const objectUrl = URL.createObjectURL(finalFile);
+              const createdAtIso = new Date(
+                file.lastModified || Date.now(),
+              ).toISOString();
+
+              const type: MediaType =
+                finalFile.type.startsWith("video") ||
+                /\.(mp4|mov|m4v|avi|mkv|webm)$/i.test(finalFile.name)
+                  ? "video"
+                  : "photo";
+
+              return {
+                id: `web-${Date.now()}-${index}-${finalFile.name}`,
+                uri: objectUrl,
+                createdAt: createdAtIso,
+                type,
+                source: "device",
+                file: finalFile,
+                originalFileName: file.name,
+                mimeType: finalFile.type,
+              } as MediaItem;
+            }),
+          );
+
+          setMedia((prev) => [...prev, ...processedItems]);
+        } catch (err) {
+          console.error("Error processing selected files", err);
+          Alert.alert("Error", "Failed to read selected files.");
+        }
+      };
+
+      input.click();
       return;
     }
 
+    // 📱 Native (iOS/Android): keep existing expo-media-library scan
     setScanningDevice(true);
     try {
       const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== "granted") {
-        Alert.alert(
-          "Permission needed",
-          "We need access to your photos."
-        );
+        Alert.alert("Permission needed", "We need access to your photos.");
         return;
       }
 
       const assets = await MediaLibrary.getAssetsAsync({
-        mediaType: [
-          MediaLibrary.MediaType.photo,
-          MediaLibrary.MediaType.video,
-        ],
+        mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
         first: 60,
         sortBy: [MediaLibrary.SortBy.creationTime],
       });
@@ -713,23 +784,19 @@ export default function LibraryScreen() {
         assets.assets.map(async (a): Promise<MediaItem> => {
           const info = await MediaLibrary.getAssetInfoAsync(a);
           const type: MediaType =
-            a.mediaType === MediaLibrary.MediaType.video
-              ? "video"
-              : "photo";
+            a.mediaType === MediaLibrary.MediaType.video ? "video" : "photo";
 
           return {
             id: `device-${a.id}`,
             uri: info.localUri ?? a.uri,
-            createdAt: new Date(
-              a.creationTime ?? Date.now()
-            ).toISOString(),
+            createdAt: new Date(a.creationTime ?? Date.now()).toISOString(),
             type,
             source: "device",
             width: info.width ?? (a as any).width,
             height: info.height ?? (a as any).height,
             exif: info.exif ?? undefined,
           };
-        })
+        }),
       );
 
       setMedia((prev): MediaItem[] => {
@@ -767,11 +834,46 @@ export default function LibraryScreen() {
         if (!token) {
           Alert.alert(
             "Not logged in",
-            "Please sign in before uploading to NAS."
+            "Please sign in before uploading to NAS.",
           );
           return false;
         }
 
+        // 🌐 Web: upload using File object
+        if (Platform.OS === "web" && item.source === "device") {
+          if (!item.file) {
+            console.warn("No File object attached for web media item");
+            return false;
+          }
+
+          const formData = new FormData();
+          formData.append("file", item.file);
+          formData.append("takenAt", item.createdAt);
+
+          if (item.width != null) {
+            formData.append("width", String(item.width));
+          }
+          if (item.height != null) {
+            formData.append("height", String(item.height));
+          }
+
+          const res = await fetch(`${NAS_BASE_URL}/upload`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            body: formData,
+          });
+
+          if (!res.ok) {
+            console.warn("Upload failed", await res.text());
+            return false;
+          }
+
+          return true;
+        }
+
+        // 📱 Native: existing device upload via file:// uri
         if (item.source === "device" && Platform.OS !== "web") {
           const formData = new FormData();
 
@@ -784,7 +886,6 @@ export default function LibraryScreen() {
             type: item.type === "video" ? "video/mp4" : "image/jpeg",
           };
 
-          // 👇 send original metadata to server
           formData.append("takenAt", item.createdAt);
           if (item.width != null) {
             formData.append("width", String(item.width));
@@ -811,7 +912,7 @@ export default function LibraryScreen() {
           return true;
         }
 
-        // For mock or web, simulate
+        // Mock items or anything else → just simulate
         await new Promise((res) => setTimeout(res, 400));
         return true;
       } catch (err) {
@@ -819,7 +920,7 @@ export default function LibraryScreen() {
         return false;
       }
     },
-    [token]
+    [token],
   );
 
   const handleUploadSelected = useCallback(async () => {
@@ -829,13 +930,13 @@ export default function LibraryScreen() {
     }
 
     const itemsToUpload = media.filter(
-      (m) => selectedIds.has(m.id) && m.source !== "server"
+      (m) => selectedIds.has(m.id) && m.source !== "server",
     );
 
     if (itemsToUpload.length === 0) {
       Alert.alert(
         "Already uploaded",
-        "All selected items are already on the server."
+        "All selected items are already on the server.",
       );
       return;
     }
@@ -855,9 +956,7 @@ export default function LibraryScreen() {
       if (ok) {
         successCount++;
         setMedia((prev) =>
-          prev.map((m) =>
-            m.id === item.id ? { ...m, source: "server" } : m
-          )
+          prev.map((m) => (m.id === item.id ? { ...m, source: "server" } : m)),
         );
       }
     }
@@ -868,7 +967,7 @@ export default function LibraryScreen() {
 
     Alert.alert(
       "Upload complete",
-      `Uploaded ${successCount} of ${itemsToUpload.length} item(s) to NAS.`
+      `Uploaded ${successCount} of ${itemsToUpload.length} item(s) to NAS.`,
     );
   }, [media, selectedCount, selectedIds, uploadOneToNas]);
 
@@ -913,7 +1012,7 @@ export default function LibraryScreen() {
         if (set.has(mediaId)) set.delete(mediaId);
         else set.add(mediaId);
         return { ...a, mediaIds: Array.from(set) };
-      })
+      }),
     );
   };
 
@@ -930,7 +1029,7 @@ export default function LibraryScreen() {
           mediaIds: Array.from(set),
           coverMediaId: mediaId,
         };
-      })
+      }),
     );
   };
 
@@ -952,8 +1051,8 @@ export default function LibraryScreen() {
     }
     setManualAlbums((prev) =>
       prev.map((a) =>
-        a.id === activeManualAlbum.id ? { ...a, title: trimmed } : a
-      )
+        a.id === activeManualAlbum.id ? { ...a, title: trimmed } : a,
+      ),
     );
     setRenameModalVisible(false);
   };
@@ -971,22 +1070,20 @@ export default function LibraryScreen() {
           style: "destructive",
           onPress: () => {
             setManualAlbums((prev) =>
-              prev.filter((a) => a.id !== activeManualAlbum.id)
+              prev.filter((a) => a.id !== activeManualAlbum.id),
             );
             setActiveAlbum(null);
             setAlbumEditMode(false);
           },
         },
-      ]
+      ],
     );
   };
 
   // Favorites (Step 8)
   const handleToggleFavorite = useCallback((item: MediaItem) => {
     setMedia((prev) =>
-      prev.map((m) =>
-        m.id === item.id ? { ...m, favorite: !m.favorite } : m
-      )
+      prev.map((m) => (m.id === item.id ? { ...m, favorite: !m.favorite } : m)),
     );
   }, []);
 
@@ -994,10 +1091,7 @@ export default function LibraryScreen() {
   const handleDeleteFromNas = useCallback(
     (item: MediaItem) => {
       if (item.source !== "server") {
-        Alert.alert(
-          "Not on NAS",
-          "This photo is not stored on the NAS yet."
-        );
+        Alert.alert("Not on NAS", "This photo is not stored on the NAS yet.");
         return;
       }
 
@@ -1011,10 +1105,7 @@ export default function LibraryScreen() {
             style: "destructive",
             onPress: async () => {
               if (!token) {
-                Alert.alert(
-                  "Not logged in",
-                  "Please sign in first."
-                );
+                Alert.alert("Not logged in", "Please sign in first.");
                 return;
               }
 
@@ -1024,47 +1115,34 @@ export default function LibraryScreen() {
                   : item.id;
 
                 const res = await fetch(
-                  `${NAS_BASE_URL}/media/${encodeURIComponent(
-                    serverId
-                  )}`,
+                  `${NAS_BASE_URL}/media/${encodeURIComponent(serverId)}`,
                   {
                     method: "DELETE",
                     headers: {
                       Authorization: `Bearer ${token}`,
                     },
-                  }
+                  },
                 );
 
                 if (!res.ok) {
-                  console.warn(
-                    "Delete failed",
-                    await res.text()
-                  );
-                  Alert.alert(
-                    "Error",
-                    "Failed to delete from NAS."
-                  );
+                  console.warn("Delete failed", await res.text());
+                  Alert.alert("Error", "Failed to delete from NAS.");
                   return;
                 }
 
                 // Remove server version from local state
-                setMedia((prev) =>
-                  prev.filter((m) => m.id !== item.id)
-                );
+                setMedia((prev) => prev.filter((m) => m.id !== item.id));
                 setViewerVisible(false);
               } catch (err) {
                 console.error("Delete error", err);
-                Alert.alert(
-                  "Error",
-                  "Failed to delete from NAS."
-                );
+                Alert.alert("Error", "Failed to delete from NAS.");
               }
             },
           },
-        ]
+        ],
       );
     },
-    [token]
+    [token],
   );
 
   // Opening photos
@@ -1425,13 +1503,11 @@ export default function LibraryScreen() {
                               </View>
                             </View>
                           )}
-                        {albumEditMode &&
-                          activeManualAlbum &&
-                          isCover && (
-                            <View style={styles.coverBadge}>
-                              <Text style={styles.coverBadgeText}>Cover</Text>
-                            </View>
-                          )}
+                        {albumEditMode && activeManualAlbum && isCover && (
+                          <View style={styles.coverBadge}>
+                            <Text style={styles.coverBadgeText}>Cover</Text>
+                          </View>
+                        )}
                       </TouchableOpacity>
                     );
                   }}

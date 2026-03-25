@@ -1,4 +1,5 @@
 // app/auth-context.tsx
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, {
   createContext,
   useCallback,
@@ -6,11 +7,10 @@ import React, {
   useEffect,
   useState,
 } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // ⚠️ Make sure this matches your backend IP / port
 // e.g. "http://192.168.0.100:3001"
-export const NAS_BASE_URL = "http://192.168.0.14:3001";
+export const NAS_BASE_URL = "https://private.moondrey.com";
 
 export type User = {
   id: string;
@@ -20,16 +20,16 @@ export type User = {
 export type AuthContextValue = {
   user: User | null;
   token: string | null;
-  isLoggedIn: boolean;      // ✅ keeps your previous API idea
-  initializing: boolean;    // loading auth from storage on app startup
-  authLoading: boolean;     // login/register in progress
+  isLoggedIn: boolean; // ✅ keeps your previous API idea
+  initializing: boolean; // loading auth from storage on app startup
+  authLoading: boolean; // login/register in progress
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 };
 
 export const AuthContext = createContext<AuthContextValue | undefined>(
-  undefined
+  undefined,
 );
 
 const STORAGE_USER_KEY = "pp_auth_user";
@@ -83,7 +83,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
     async (
       endpoint: "/auth/login" | "/auth/register",
       email: string,
-      password: string
+      password: string,
     ) => {
       setAuthLoading(true);
       try {
@@ -96,8 +96,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         const data = await res.json();
 
         if (!res.ok) {
-          const msg =
-            data?.error || data?.message || "Authentication failed";
+          const msg = data?.error || data?.message || "Authentication failed";
           throw new Error(msg);
         }
 
@@ -109,21 +108,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         setAuthLoading(false);
       }
     },
-    []
+    [],
   );
 
   const login = useCallback(
     async (email: string, password: string) => {
       await callAuthEndpoint("/auth/login", email.trim(), password);
     },
-    [callAuthEndpoint]
+    [callAuthEndpoint],
   );
 
   const register = useCallback(
     async (email: string, password: string) => {
       await callAuthEndpoint("/auth/register", email.trim(), password);
     },
-    [callAuthEndpoint]
+    [callAuthEndpoint],
   );
 
   const logout = useCallback(async () => {
