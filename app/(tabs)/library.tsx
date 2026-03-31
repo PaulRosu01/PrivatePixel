@@ -1,4 +1,5 @@
 // app/(tabs)/library.tsx
+import { ResizeMode, Video } from "expo-av";
 import * as MediaLibrary from "expo-media-library";
 import React, {
   useCallback,
@@ -271,6 +272,24 @@ const ZoomableImage = ({ uri }: { uri: string }) => {
   );
 };
 
+function MediaThumb({ item }: { item: MediaItem }) {
+  if (item.type === "video") {
+    return (
+      <Video
+        source={{ uri: item.uri }}
+        style={styles.gridImage}
+        resizeMode={ResizeMode.COVER}
+        shouldPlay={false}
+        isLooping={false}
+        isMuted
+        useNativeControls={false}
+      />
+    );
+  }
+
+  return <Image source={{ uri: item.uri }} style={styles.gridImage} />;
+}
+
 // -----------------------------------------------------------------------------
 // Fullscreen Viewer (swipe + zoom + metadata + favorite + delete)
 // -----------------------------------------------------------------------------
@@ -343,7 +362,18 @@ const FullscreenViewer: React.FC<ViewerProps> = ({
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => (
             <View style={[styles.viewerPage, { width, height }]}>
-              <ZoomableImage uri={item.uri} />
+              {item.type === "video" ? (
+                <Video
+                  source={{ uri: item.uri }}
+                  style={styles.viewerImage}
+                  resizeMode={ResizeMode.CONTAIN}
+                  useNativeControls
+                  shouldPlay
+                  isLooping={false}
+                />
+              ) : (
+                <ZoomableImage uri={item.uri} />
+              )}
             </View>
           )}
           // 👇 Tell FlatList how big each page is
@@ -1217,13 +1247,8 @@ export default function LibraryScreen() {
       return;
     }
 
-    const photos = allItems.filter((i) => i.type === "photo");
-    const clicked = allItems[index];
-    let start = photos.findIndex((p) => p.id === clicked.id);
-    if (start === -1) start = 0;
-
-    setViewerItems(photos);
-    setViewerIndex(start);
+    setViewerItems(allItems);
+    setViewerIndex(index);
     setViewerVisible(true);
   };
 
@@ -1299,7 +1324,7 @@ export default function LibraryScreen() {
               disabled={syncing}
             >
               <Text style={styles.actionButtonText}>
-                {syncing ? "Syncing..." : "Sync (demo + NAS)"}
+                {syncing ? "Syncing..." : "Sync from NAS"}
               </Text>
             </TouchableOpacity>
 
@@ -1522,10 +1547,7 @@ export default function LibraryScreen() {
                           openPhotoMenu(item);
                         }}
                       >
-                        <Image
-                          source={{ uri: item.uri }}
-                          style={styles.gridImage}
-                        />
+                        <MediaThumb item={item} />
                         {item.type === "video" && (
                           <View style={styles.videoBadge}>
                             <Text style={styles.videoBadgeIcon}>▶</Text>
