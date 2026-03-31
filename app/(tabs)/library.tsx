@@ -11,6 +11,7 @@ import {
   Alert,
   FlatList,
   Image,
+  Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Platform,
@@ -23,7 +24,11 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import {
+  Gesture,
+  GestureDetector,
+  Pressable,
+} from "react-native-gesture-handler";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -451,6 +456,9 @@ export default function LibraryScreen() {
   const [renameModalVisible, setRenameModalVisible] = useState(false);
   const [renameText, setRenameText] = useState("");
 
+  const [photoMenuVisible, setPhotoMenuVisible] = useState(false);
+  const [photoMenuItem, setPhotoMenuItem] = useState<MediaItem | null>(null);
+
   // Selection + upload queue
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -645,7 +653,11 @@ export default function LibraryScreen() {
           tagStatus: item.tagStatus ?? "none",
           taggedAt: item.taggedAt,
           tagModel: item.tagModel,
-          originalFileName: item.originalFileName || item.filename || item.id,
+          originalFileName:
+            item.originalName ||
+            item.originalFileName ||
+            item.filename ||
+            item.id,
         };
       });
 
@@ -1074,6 +1086,65 @@ export default function LibraryScreen() {
     );
   }, []);
 
+  const openPhotoMenu = useCallback((item: MediaItem) => {
+    setPhotoMenuItem(item);
+    setPhotoMenuVisible(true);
+  }, []);
+
+  const closePhotoMenu = useCallback(() => {
+    setPhotoMenuVisible(false);
+    setPhotoMenuItem(null);
+  }, []);
+
+  const handleMenuToggleFavorite = useCallback(() => {
+    if (!photoMenuItem) return;
+
+    handleToggleFavorite(photoMenuItem);
+    closePhotoMenu();
+  }, [photoMenuItem, handleToggleFavorite, closePhotoMenu]);
+
+  const handleMenuShowTags = useCallback(() => {
+    if (!photoMenuItem) return;
+
+    const tags = photoMenuItem.tags ?? [];
+    const title = photoMenuItem.originalFileName || "Photo tags";
+
+    let message = "";
+
+    if (tags.length > 0) {
+      message += `Tags: ${tags.join(", ")}`;
+    } else {
+      message += "No tags available yet.";
+    }
+
+    if (photoMenuItem.tagStatus) {
+      message += `\n\nTag status: ${photoMenuItem.tagStatus}`;
+    }
+
+    if (photoMenuItem.tagModel) {
+      message += `\nModel: ${photoMenuItem.tagModel}`;
+    }
+
+    Alert.alert(title, message);
+    closePhotoMenu();
+  }, [photoMenuItem, closePhotoMenu]);
+
+  const handleMenuSelect = useCallback(() => {
+    if (!photoMenuItem) return;
+
+    if (!selectMode) {
+      setSelectMode(true);
+    }
+
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.add(photoMenuItem.id);
+      return next;
+    });
+
+    closePhotoMenu();
+  }, [photoMenuItem, selectMode, closePhotoMenu]);
+
   // Delete from NAS (Step 6)
   const handleDeleteFromNas = useCallback(
     (item: MediaItem) => {
@@ -1445,7 +1516,10 @@ export default function LibraryScreen() {
                         onLongPress={() => {
                           if (albumEditMode && activeManualAlbum) {
                             handleSetCoverForActiveAlbum(item.id);
+                            return;
                           }
+
+                          openPhotoMenu(item);
                         }}
                       >
                         <Image
@@ -1504,6 +1578,62 @@ export default function LibraryScreen() {
           </ScrollView>
         )}
       </ScreenContainer>
+
+      <Modal
+        visible={photoMenuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closePhotoMenu}
+      >
+        <View style={styles.photoMenuBackdrop}>
+          <Pressable
+            style={styles.photoMenuBackdropPressArea}
+            onPress={closePhotoMenu}
+          />
+
+          <View style={styles.photoMenuSheet}>
+            <Text style={styles.photoMenuTitle}>
+              {photoMenuItem?.originalFileName || "Photo options"}
+            </Text>
+
+            <TouchableOpacity
+              style={styles.photoMenuAction}
+              onPress={handleMenuToggleFavorite}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.photoMenuActionText}>
+                {photoMenuItem?.favorite
+                  ? "Remove from favourites"
+                  : "Add to favourites"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.photoMenuAction}
+              onPress={handleMenuShowTags}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.photoMenuActionText}>Show tags</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.photoMenuAction}
+              onPress={handleMenuSelect}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.photoMenuActionText}>Select</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.photoMenuAction, styles.photoMenuCancelAction]}
+              onPress={closePhotoMenu}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.photoMenuCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Fullscreen viewer */}
       {viewerVisible && (
@@ -2015,5 +2145,53 @@ const styles = StyleSheet.create({
   viewerMetaText: {
     color: "white",
     fontSize: 12,
+  },
+  photoMenuBackdrop: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
+
+  photoMenuBackdropPressArea: {
+    flex: 1,
+  },
+
+  photoMenuSheet: {
+    backgroundColor: "#020617",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 28,
+    borderTopWidth: 1,
+    borderColor: "#1f2933",
+  },
+
+  photoMenuTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#e5e7eb",
+    marginBottom: 10,
+  },
+
+  photoMenuAction: {
+    paddingVertical: 18,
+    borderTopWidth: 1,
+    borderColor: "#1f2933",
+  },
+
+  photoMenuActionText: {
+    fontSize: 16,
+    color: "#e5e7eb",
+  },
+
+  photoMenuCancelAction: {
+    marginTop: 8,
+  },
+
+  photoMenuCancelText: {
+    fontSize: 16,
+    color: "#f97373",
+    fontWeight: "600",
   },
 });
