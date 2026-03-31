@@ -47,7 +47,9 @@ export default function RootLayout() {
           <ThemeModeContext.Consumer>
             {(themeMode) => {
               const navTheme =
-                themeMode?.mode === "light" ? customLightTheme : customDarkTheme;
+                themeMode?.mode === "light"
+                  ? customLightTheme
+                  : customDarkTheme;
 
               return (
                 <NavThemeProvider value={navTheme}>

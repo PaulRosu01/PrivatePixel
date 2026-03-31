@@ -31,14 +31,14 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { NAS_BASE_URL, useAuth } from "../auth-context";
+import { setManualAlbumSnapshots } from "../manual-albums-store";
 import { Header, ScreenContainer } from "./_components";
-
 // -----------------------------------------------------------------------------
 // Types
 // -----------------------------------------------------------------------------
 
 type MediaType = "photo" | "video";
-type MediaSource = "mock" | "device" | "server";
+type MediaSource = "device" | "server";
 
 type MediaItem = {
   id: string;
@@ -190,63 +190,6 @@ function buildDedupKey(item: MediaItem): string {
 // -----------------------------------------------------------------------------
 // Demo data
 // -----------------------------------------------------------------------------
-
-const initialMedia: MediaItem[] = [
-  {
-    id: "1",
-    uri: "https://picsum.photos/400?random=11",
-    createdAt: new Date().toISOString(),
-    type: "photo",
-    source: "mock",
-    width: 400,
-    height: 400,
-  },
-  {
-    id: "2",
-    uri: "https://picsum.photos/400?random=12",
-    createdAt: new Date().toISOString(),
-    type: "photo",
-    source: "mock",
-    width: 400,
-    height: 400,
-  },
-  {
-    id: "3",
-    uri: "https://picsum.photos/400?random=13",
-    createdAt: daysAgo(1),
-    type: "video",
-    source: "mock",
-    width: 1920,
-    height: 1080,
-  },
-  {
-    id: "4",
-    uri: "https://picsum.photos/400?random=14",
-    createdAt: daysAgo(2),
-    type: "photo",
-    source: "mock",
-    width: 400,
-    height: 400,
-  },
-  {
-    id: "5",
-    uri: "https://picsum.photos/400?random=15",
-    createdAt: daysAgo(5),
-    type: "video",
-    source: "mock",
-    width: 1280,
-    height: 720,
-  },
-  {
-    id: "6",
-    uri: "https://picsum.photos/400?random=16",
-    createdAt: daysAgo(12),
-    type: "photo",
-    source: "mock",
-    width: 400,
-    height: 400,
-  },
-];
 
 // -----------------------------------------------------------------------------
 // Grouping helpers
@@ -490,7 +433,7 @@ const FullscreenViewer: React.FC<ViewerProps> = ({
 export default function LibraryScreen() {
   const { token } = useAuth();
 
-  const [media, setMedia] = useState<MediaItem[]>(initialMedia);
+  const [media, setMedia] = useState<MediaItem[]>([]);
   const [filter, setFilter] = useState<"all" | "photos" | "videos">("all");
 
   const [manualAlbums, setManualAlbums] = useState<ManualAlbum[]>([]);
@@ -524,6 +467,23 @@ export default function LibraryScreen() {
     if (!activeAlbum || activeAlbum.kind !== "manual") return null;
     return manualAlbums.find((a) => a.id === activeAlbum.id) ?? null;
   }, [activeAlbum, manualAlbums]);
+  useEffect(() => {
+    const snapshots = manualAlbums.map((album) => {
+      const coverMedia =
+        media.find((m) => m.id === album.coverMediaId) ??
+        media.find((m) => album.mediaIds.includes(m.id));
+
+      return {
+        id: album.id,
+        title: album.title,
+        createdAt: album.createdAt,
+        count: album.mediaIds.length,
+        coverUri: coverMedia?.uri,
+      };
+    });
+
+    setManualAlbumSnapshots(snapshots);
+  }, [manualAlbums, media]);
 
   // Build albums list (includes Favorites smart album)
   const albums = useMemo<AlbumInfo[]>(() => {
@@ -636,24 +596,6 @@ export default function LibraryScreen() {
   );
 
   // Pull-to-refresh (demo)
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await new Promise((res) => setTimeout(res, 700));
-
-    const newItem: MediaItem = {
-      id: String(Date.now()),
-      uri:
-        "https://picsum.photos/400?random=" + Math.floor(Math.random() * 5000),
-      createdAt: new Date().toISOString(),
-      type: Math.random() > 0.7 ? "video" : "photo",
-      source: "mock",
-      width: 400,
-      height: 400,
-    };
-
-    setMedia((prev) => [newItem, ...prev]);
-    setRefreshing(false);
-  }, []);
 
   // Sync from NAS
   const syncFromServer = useCallback(async () => {
@@ -721,6 +663,12 @@ export default function LibraryScreen() {
       console.error("Error syncing NAS media", err);
     }
   }, [token]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await syncFromServer();
+    setRefreshing(false);
+  }, [syncFromServer]);
 
   const handleSyncClick = useCallback(async () => {
     setSyncing(true);
