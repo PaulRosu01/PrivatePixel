@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "immich-clone",
-    "slug": "immich-clone",
+    "name": "PrivatePixel",
+    "slug": "privatepixel",
     "owner": "frateledark",
 
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "immichclone",
+    "scheme": "privatepixel",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     

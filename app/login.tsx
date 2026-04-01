@@ -1,25 +1,25 @@
 // app/login.tsx
+import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
+  KeyboardAvoidingView,
+  Platform,
   SafeAreaView,
-  View,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
+  View,
 } from "react-native";
-import { useRouter } from "expo-router";
-import { useAuth } from "./auth-context";
+import { NAS_BASE_URL, useAuth } from "./auth-context";
 
 export default function LoginScreen() {
   const router = useRouter();
   const { login, register, authLoading } = useAuth();
 
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [email, setEmail] = useState("alex@example.com");
-  const [password, setPassword] = useState("password123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const onSubmit = async () => {
@@ -54,10 +54,8 @@ export default function LoginScreen() {
           <View style={styles.logoCircle}>
             <Text style={styles.logoText}>📸</Text>
           </View>
-          <Text style={styles.title}>Immich Lite</Text>
-          <Text style={styles.subtitle}>
-            Self-hosted private photo backup
-          </Text>
+          <Text style={styles.title}>PrivatePixel</Text>
+          <Text style={styles.subtitle}>Self-hosted private photo backup</Text>
         </View>
 
         <View style={styles.card}>
@@ -99,8 +97,8 @@ export default function LoginScreen() {
                   ? "Signing in..."
                   : "Creating account..."
                 : mode === "login"
-                ? "Sign in"
-                : "Create account"}
+                  ? "Sign in"
+                  : "Create account"}
             </Text>
           </TouchableOpacity>
 
@@ -132,7 +130,7 @@ export default function LoginScreen() {
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>
-            Server: your Ubuntu NAS ({/* you can inject IP here later */})
+            Server: your Ubuntu NAS ({NAS_BASE_URL})
           </Text>
         </View>
       </KeyboardAvoidingView>

@@ -544,6 +544,7 @@ export default function LibraryScreen() {
   const [addTagsModalVisible, setAddTagsModalVisible] = useState(false);
   const [addTagsText, setAddTagsText] = useState("");
   const [savingAddedTags, setSavingAddedTags] = useState(false);
+  const [retryingTagItemId, setRetryingTagItemId] = useState<string | null>(null);
   const [tagTargetItem, setTagTargetItem] = useState<MediaItem | null>(null);
 
   // Selection + upload queue
@@ -744,6 +745,11 @@ export default function LibraryScreen() {
     );
   }
 
+  function getServerMediaId(item: MediaItem): string | null {
+    if (item.source !== "server") return null;
+    return item.id.startsWith("server-") ? item.id.slice("server-".length) : item.id;
+  }
+
   const closePhotoMenu = useCallback(() => {
     setPhotoMenuVisible(false);
     setPhotoMenuItem(null);
@@ -834,6 +840,82 @@ export default function LibraryScreen() {
       setSavingAddedTags(false);
     }
   }, [photoMenuItem, token, addTagsText, closeAddTagsModal]);
+
+  const handleMenuRetryTagging = useCallback(async () => {
+    if (!photoMenuItem || !token) return;
+
+    if (photoMenuItem.source !== "server") {
+      Alert.alert(
+        "Upload first",
+        "AI tagging can only be retried after the photo is uploaded to the server.",
+      );
+      closePhotoMenu();
+      return;
+    }
+
+    if (photoMenuItem.type !== "photo") {
+      Alert.alert(
+        "Photos only",
+        "Retry AI tagging is only available for photos.",
+      );
+      closePhotoMenu();
+      return;
+    }
+
+    const serverId = getServerMediaId(photoMenuItem);
+    if (!serverId) {
+      Alert.alert("Unavailable", "Could not determine the server media id.");
+      closePhotoMenu();
+      return;
+    }
+
+    try {
+      setRetryingTagItemId(photoMenuItem.id);
+
+      const response = await fetch(
+        `${NAS_BASE_URL}/media/${encodeURIComponent(serverId)}/retry-tagging`,
+        {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+      );
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error("Single-photo retry tagging is not supported by the server yet.");
+        }
+        throw new Error(data?.error || "Failed to retry AI tagging.");
+      }
+
+      setMedia((prev) =>
+        prev.map((m) =>
+          m.id === photoMenuItem.id
+            ? {
+                ...m,
+                tagStatus: "pending",
+              }
+            : m,
+        ),
+      );
+
+      Alert.alert(
+        "AI tagging queued",
+        data?.message || "Retry started for the selected photo.",
+      );
+      closePhotoMenu();
+    } catch (error: any) {
+      Alert.alert(
+        "Retry failed",
+        error?.message || "Something went wrong while retrying AI tagging.",
+      );
+    } finally {
+      setRetryingTagItemId(null);
+    }
+  }, [photoMenuItem, token, closePhotoMenu]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -1761,6 +1843,21 @@ export default function LibraryScreen() {
             >
               <Text style={styles.photoMenuActionText}>Add tags</Text>
             </TouchableOpacity>
+
+            {photoMenuItem?.source === "server" && photoMenuItem.type === "photo" && (
+              <TouchableOpacity
+                style={styles.photoMenuAction}
+                onPress={handleMenuRetryTagging}
+                activeOpacity={0.7}
+                disabled={retryingTagItemId === photoMenuItem.id}
+              >
+                <Text style={styles.photoMenuActionText}>
+                  {retryingTagItemId === photoMenuItem.id
+                    ? "Retrying AI tagging..."
+                    : "Retry AI tagging"}
+                </Text>
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity
               style={styles.photoMenuAction}
