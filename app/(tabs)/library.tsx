@@ -541,6 +541,11 @@ export default function LibraryScreen() {
   const [photoMenuVisible, setPhotoMenuVisible] = useState(false);
   const [photoMenuItem, setPhotoMenuItem] = useState<MediaItem | null>(null);
 
+  const [addTagsModalVisible, setAddTagsModalVisible] = useState(false);
+  const [addTagsText, setAddTagsText] = useState("");
+  const [savingAddedTags, setSavingAddedTags] = useState(false);
+  const [tagTargetItem, setTagTargetItem] = useState<MediaItem | null>(null);
+
   // Selection + upload queue
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -727,6 +732,108 @@ export default function LibraryScreen() {
       console.error("Error syncing NAS media", err);
     }
   }, [token]);
+
+  function parseAddedTags(input: string): string[] {
+    return Array.from(
+      new Set(
+        input
+          .split(",")
+          .map((tag) => tag.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  const closePhotoMenu = useCallback(() => {
+    setPhotoMenuVisible(false);
+    setPhotoMenuItem(null);
+  }, []);
+
+  const closeAddTagsModal = useCallback(() => {
+    setAddTagsModalVisible(false);
+    setAddTagsText("");
+    setPhotoMenuItem(null);
+  }, []);
+
+  const handleMenuAddTags = useCallback(() => {
+    if (!photoMenuItem) return;
+
+    if (photoMenuItem.source !== "server") {
+      Alert.alert(
+        "Upload first",
+        "You can add extra tags after the photo is uploaded to the server.",
+      );
+      closePhotoMenu();
+      return;
+    }
+
+    setAddTagsText("");
+    setPhotoMenuVisible(false);
+    setAddTagsModalVisible(true);
+  }, [photoMenuItem]);
+
+  const handleSaveAddedTags = useCallback(async () => {
+    if (!photoMenuItem || !token) return;
+
+    const parsedTags = parseAddedTags(addTagsText);
+
+    if (parsedTags.length === 0) {
+      Alert.alert("No tags", "Type at least one tag.");
+      return;
+    }
+
+    try {
+      setSavingAddedTags(true);
+
+      const serverId = photoMenuItem.id.startsWith("server-")
+        ? photoMenuItem.id.slice("server-".length)
+        : photoMenuItem.id;
+
+      const res = await fetch(
+        `${NAS_BASE_URL}/media/${encodeURIComponent(serverId)}/tags/add`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            tags: parsedTags,
+          }),
+        },
+      );
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to add tags.");
+      }
+
+      const updatedItem = data?.item;
+
+      if (updatedItem) {
+        setMedia((prev) =>
+          prev.map((m) =>
+            m.id === photoMenuItem.id
+              ? {
+                  ...m,
+                  tags: updatedItem.tags ?? [],
+                  tagStatus: updatedItem.tagStatus ?? "done",
+                  taggedAt: updatedItem.taggedAt ?? null,
+                  tagModel: updatedItem.tagModel ?? m.tagModel,
+                }
+              : m,
+          ),
+        );
+      }
+
+      closeAddTagsModal();
+    } catch (error: any) {
+      Alert.alert("Failed", error?.message || "Could not add tags.");
+    } finally {
+      setSavingAddedTags(false);
+    }
+  }, [photoMenuItem, token, addTagsText, closeAddTagsModal]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -1141,11 +1248,6 @@ export default function LibraryScreen() {
   const openPhotoMenu = useCallback((item: MediaItem) => {
     setPhotoMenuItem(item);
     setPhotoMenuVisible(true);
-  }, []);
-
-  const closePhotoMenu = useCallback(() => {
-    setPhotoMenuVisible(false);
-    setPhotoMenuItem(null);
   }, []);
 
   const handleMenuToggleFavorite = useCallback(() => {
@@ -1654,6 +1756,14 @@ export default function LibraryScreen() {
 
             <TouchableOpacity
               style={styles.photoMenuAction}
+              onPress={handleMenuAddTags}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.photoMenuActionText}>Add tags</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.photoMenuAction}
               onPress={handleMenuShowTags}
               activeOpacity={0.7}
             >
@@ -1672,6 +1782,56 @@ export default function LibraryScreen() {
               style={[styles.photoMenuAction, styles.photoMenuCancelAction]}
               onPress={closePhotoMenu}
               activeOpacity={0.7}
+            >
+              <Text style={styles.photoMenuCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={addTagsModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeAddTagsModal}
+      >
+        <View style={styles.photoMenuBackdrop}>
+          <Pressable
+            style={styles.photoMenuBackdropPressArea}
+            onPress={closeAddTagsModal}
+          />
+
+          <View style={styles.photoMenuSheet}>
+            <Text style={styles.photoMenuTitle}>Add tags</Text>
+
+            <Text style={styles.cardSubtitle}>
+              Existing tags: {(photoMenuItem?.tags ?? []).join(", ") || "none"}
+            </Text>
+
+            <TextInput
+              value={addTagsText}
+              onChangeText={setAddTagsText}
+              placeholder="e.g. sunset, holiday, family"
+              placeholderTextColor="#6b7280"
+              style={styles.searchInput}
+            />
+
+            <TouchableOpacity
+              style={[
+                styles.photoMenuAction,
+                savingAddedTags && styles.disabledButton,
+              ]}
+              onPress={handleSaveAddedTags}
+              disabled={savingAddedTags}
+            >
+              <Text style={styles.photoMenuActionText}>
+                {savingAddedTags ? "Saving..." : "Save tags"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.photoMenuAction, styles.photoMenuCancelAction]}
+              onPress={closeAddTagsModal}
             >
               <Text style={styles.photoMenuCancelText}>Cancel</Text>
             </TouchableOpacity>
@@ -1723,6 +1883,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
     color: "#e5e7eb",
+  },
+  cardSubtitle: {
+    fontSize: 12,
+    color: "#9ca3af",
+    marginTop: 4,
   },
   searchRow: {
     marginBottom: 8,
@@ -2237,5 +2402,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#f97373",
     fontWeight: "600",
+  },
+  disabledButton: {
+    opacity: 0.5,
   },
 });
