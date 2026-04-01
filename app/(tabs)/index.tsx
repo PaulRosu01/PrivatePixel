@@ -21,6 +21,10 @@ type ServerMediaItem = {
   originalName?: string;
   mimetype?: string;
   url?: string;
+  tags?: string[];
+  tagStatus?: "pending" | "done" | "error" | "none";
+  taggedAt?: string;
+  tagModel?: string;
 };
 
 type DeviceMediaItem = {
@@ -120,18 +124,19 @@ export default function HomeScreen() {
       const devicePromise =
         Platform.OS === "web" ? Promise.resolve([]) : scanDeviceMedia();
 
+      let fetchedServer = true;
       const [device, server] = await Promise.all([
         devicePromise,
         fetchServerMedia().catch((err) => {
           console.warn("Failed to fetch server media:", err);
-          setServerOnline(false);
+          fetchedServer = false;
           return [];
         }),
       ]);
 
       setDeviceItems(device);
       setServerItems(server);
-      setServerOnline(true);
+      setServerOnline(fetchedServer);
       setLastRefreshAt(new Date().toISOString());
     } catch (err) {
       console.error(err);
@@ -182,6 +187,45 @@ export default function HomeScreen() {
     (item) => item.mediaType === "video",
   ).length;
 
+  const taggableServerItems = useMemo(() => {
+    return serverItems.filter((item) => {
+      const mime = (item.mimetype || "").toLowerCase();
+      if (mime.startsWith("video/")) return false;
+      const name = `${item.originalName || ""} ${item.id || ""}`.toLowerCase();
+      if (/\.(mp4|mov|m4v|avi|mkv|webm)$/i.test(name)) return false;
+      return true;
+    });
+  }, [serverItems]);
+
+  const taggingDoneCount = useMemo(() => {
+    return taggableServerItems.filter(
+      (item) =>
+        item.tagStatus === "done" ||
+        (Array.isArray(item.tags) && item.tags.length > 0),
+    ).length;
+  }, [taggableServerItems]);
+
+  const taggingPendingCount = useMemo(() => {
+    return taggableServerItems.filter((item) => item.tagStatus === "pending")
+      .length;
+  }, [taggableServerItems]);
+
+  const taggingErrorCount = useMemo(() => {
+    return taggableServerItems.filter((item) => item.tagStatus === "error")
+      .length;
+  }, [taggableServerItems]);
+
+  const taggingUntaggedCount = useMemo(() => {
+    return taggableServerItems.filter((item) => {
+      const hasTags = Array.isArray(item.tags) && item.tags.length > 0;
+      return !hasTags && (item.tagStatus === "none" || !item.tagStatus);
+    }).length;
+  }, [taggableServerItems]);
+
+  const taggingTotal = taggableServerItems.length;
+  const taggingProgress =
+    taggingTotal > 0 ? Math.round((taggingDoneCount / taggingTotal) * 100) : 0;
+
   const subtitle = useMemo(() => {
     if (loading) return "Checking your backup status...";
     if (lastRefreshAt) {
@@ -218,6 +262,43 @@ export default function HomeScreen() {
             {loading ? "Refreshing..." : "Refresh status"}
           </Text>
         </TouchableOpacity>
+      </View>
+
+      <View style={s.card}>
+        <Text style={s.cardTitle}>Image tagging status</Text>
+        <Text style={s.cardSubtitle}>
+          {loading
+            ? "Checking AI tagging progress..."
+            : `${taggingDoneCount} of ${taggingTotal} images tagged`}
+        </Text>
+
+        <View style={s.progressBar}>
+          <View
+            style={[s.progressBarFillAlt, { width: `${taggingProgress}%` }]}
+          />
+        </View>
+
+        <Text style={s.progressLabel}>{taggingProgress}% complete</Text>
+
+        <View style={s.statusRow}>
+          <Text style={s.statusLabel}>Tagged</Text>
+          <Text style={s.statusValue}>{taggingDoneCount}</Text>
+        </View>
+
+        <View style={s.statusRow}>
+          <Text style={s.statusLabel}>Pending</Text>
+          <Text style={s.statusValue}>{taggingPendingCount}</Text>
+        </View>
+
+        <View style={s.statusRow}>
+          <Text style={s.statusLabel}>Failed</Text>
+          <Text style={s.statusValue}>{taggingErrorCount}</Text>
+        </View>
+
+        <View style={s.statusRow}>
+          <Text style={s.statusLabel}>Untagged</Text>
+          <Text style={s.statusValue}>{taggingUntaggedCount}</Text>
+        </View>
       </View>
 
       <View style={s.card}>
@@ -319,6 +400,10 @@ const s = StyleSheet.create({
   progressBarFill: {
     height: "100%",
     backgroundColor: "#38bdf8",
+  },
+  progressBarFillAlt: {
+    height: "100%",
+    backgroundColor: "#f97316",
   },
   progressLabel: {
     fontSize: 12,

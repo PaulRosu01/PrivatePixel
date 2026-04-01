@@ -182,6 +182,28 @@ function detectTypeFromName(nameOrUrl: string): MediaType {
   return "photo";
 }
 
+function detectTypeFromServerItem(item: any): MediaType {
+  const mime = String(item?.mimetype || item?.mimeType || "").toLowerCase();
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("image/")) return "photo";
+
+  const candidates = [
+    item?.originalName,
+    item?.originalFileName,
+    item?.filename,
+    item?.url,
+    item?.id,
+  ]
+    .filter(Boolean)
+    .map((value) => String(value));
+
+  for (const candidate of candidates) {
+    if (detectTypeFromName(candidate) === "video") return "video";
+  }
+
+  return "photo";
+}
+
 // Used to deduplicate device/server/mock copies of the same photo
 function buildDedupKey(item: MediaItem): string {
   // Use createdAt (to the second) + resolution.
@@ -191,6 +213,36 @@ function buildDedupKey(item: MediaItem): string {
     item.width && item.height ? `${item.width}x${item.height}` : "";
 
   return `${timePart}|${sizePart}`;
+}
+
+function dedupeMediaItems(items: MediaItem[]): MediaItem[] {
+  const priority = (source: MediaSource) => {
+    if (source === "server") return 3;
+    if (source === "device") return 2;
+    if (source === "mock") return 1;
+    return 0;
+  };
+
+  const buckets = new Map<string, MediaItem[]>();
+  for (const item of items) {
+    const key = buildDedupKey(item);
+    const arr = buckets.get(key);
+    if (arr) arr.push(item);
+    else buckets.set(key, [item]);
+  }
+
+  const deduped: MediaItem[] = [];
+  for (const bucket of buckets.values()) {
+    let best = bucket[0];
+    for (const item of bucket) {
+      if (priority(item.source) > priority(best.source)) {
+        best = item;
+      }
+    }
+    deduped.push(best);
+  }
+
+  return deduped;
 }
 
 // -----------------------------------------------------------------------------
@@ -532,7 +584,7 @@ export default function LibraryScreen() {
       title: string,
       predicate: (m: MediaItem) => boolean,
     ) => {
-      const items = media.filter(predicate);
+      const items = dedupeMediaItems(media.filter(predicate));
       if (!items.length) return;
       result.push({
         id,
@@ -598,34 +650,7 @@ export default function LibraryScreen() {
     }
 
     // 🔥 Dedupe device/server/mock duplicates by key
-    const priority = (source: MediaSource) => {
-      if (source === "server") return 3;
-      if (source === "device") return 2;
-      if (source === "mock") return 1;
-      return 0;
-    };
-
-    // Group items by dedup key
-    const buckets = new Map<string, MediaItem[]>();
-    for (const item of base) {
-      const key = buildDedupKey(item);
-      const arr = buckets.get(key);
-      if (arr) arr.push(item);
-      else buckets.set(key, [item]);
-    }
-
-    const deduped: MediaItem[] = [];
-    for (const items of buckets.values()) {
-      let best = items[0];
-      for (const item of items) {
-        if (priority(item.source) > priority(best.source)) {
-          best = item;
-        }
-      }
-      deduped.push(best);
-    }
-
-    return deduped;
+    return dedupeMediaItems(base);
   }, [media, filter, activeAlbum, albumEditMode, manualAlbums, searchQuery]);
 
   const groups = useMemo(
@@ -655,10 +680,7 @@ export default function LibraryScreen() {
 
       const serverItems: MediaItem[] = (data ?? []).map((item: any) => {
         const url: string = item.url;
-        const baseName: string =
-          typeof item.id === "string" && item.id.length ? item.id : url;
-
-        const type = detectTypeFromName(baseName);
+        const type = detectTypeFromServerItem(item);
 
         let createdAtIso = new Date().toISOString();
         if (item.createdAt) {
