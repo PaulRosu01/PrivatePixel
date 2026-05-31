@@ -6,7 +6,10 @@ import React, { useContext, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Platform,
+  Pressable,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -61,13 +64,130 @@ export default function SettingsScreen() {
   const router = useRouter();
   const { colors } = useTheme();
 
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [savingModel, setSavingModel] = useState(false);
+  const [modelModalVisible, setModelModalVisible] = useState(false);
+
   const isDark = themeMode?.mode === "dark";
 
   const handleLogout = () => {
     auth?.logout?.();
     router.replace("/login");
   };
+  const loadAiModelSettings = async () => {
+    if (!auth?.token) {
+      console.warn("No token yet, skipping AI model load");
+      return;
+    }
 
+    try {
+      setLoadingModels(true);
+
+      const headers = {
+        Authorization: `Bearer ${auth.token}`,
+      };
+
+      const [modelsRes, settingsRes] = await Promise.all([
+        fetch(`${NAS_BASE_URL}/ai/models`, { headers }),
+        fetch(`${NAS_BASE_URL}/ai/settings`, { headers }),
+      ]);
+
+      if (modelsRes.status === 401 || settingsRes.status === 401) {
+        throw new Error("Invalid token");
+      }
+
+      const modelsData = await modelsRes.json();
+      const settingsData = await settingsRes.json();
+
+      setAvailableModels(modelsData.models || []);
+      setSelectedModel(settingsData.selectedTagModel || "");
+    } catch (err) {
+      console.error("Failed to load AI model settings:", err);
+    } finally {
+      setLoadingModels(false);
+    }
+  };
+
+  const handleSaveSelectedModel = async () => {
+    if (!auth?.token) {
+      Alert.alert("Not logged in", "Please sign in first.");
+      return;
+    }
+
+    if (!selectedModel) {
+      Alert.alert("No model selected", "Choose a model first.");
+      return;
+    }
+
+    try {
+      setSavingModel(true);
+
+      const response = await fetch(`${NAS_BASE_URL}/ai/settings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${auth.token}`,
+        },
+        body: JSON.stringify({
+          selectedTagModel: selectedModel,
+        }),
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(data?.error || "Failed to save selected model.");
+      }
+
+      setModelModalVisible(false);
+
+      Alert.alert(
+        "Model saved",
+        `Future AI tagging will use ${selectedModel}.`,
+      );
+    } catch (error: any) {
+      Alert.alert(
+        "Save failed",
+        error?.message || "Could not save the selected model.",
+      );
+    } finally {
+      setSavingModel(false);
+    }
+  };
+  useEffect(() => {
+    if (!auth?.token) return;
+
+    loadAiModelSettings();
+  }, [auth?.token]);
+  console.log("TOKEN:", auth?.token);
+  const saveSelectedModel = async () => {
+    try {
+      setSavingModel(true);
+
+      const res = await fetch(`${NAS_BASE_URL}/ai/settings`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${auth?.token}`,
+        },
+        body: JSON.stringify({
+          selectedTagModel: selectedModel,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to save model");
+      }
+
+      Alert.alert("Saved", "AI model updated successfully");
+    } catch (err) {
+      Alert.alert("Error", "Could not save model");
+    } finally {
+      setSavingModel(false);
+    }
+  };
   const checkServer = async () => {
     if (!auth?.token) {
       setServerOnline(null);
@@ -332,171 +452,306 @@ export default function SettingsScreen() {
   }, [checkingServer, serverOnline]);
 
   return (
-    <ScreenContainer>
-      <Header
-        title="Settings"
-        subtitle="Account, server & backup preferences"
-      />
-
-      <View
-        style={[
-          styles.card,
-          { backgroundColor: colors.card, borderColor: colors.border },
-        ]}
-      >
-        <Text style={[styles.cardTitle, { color: colors.text }]}>
-          Appearance
-        </Text>
-
-        <View style={styles.toggleRow}>
-          <View style={{ flex: 1, paddingRight: 8 }}>
-            <Text style={styles.settingsLabel}>Dark mode</Text>
-            <Text style={styles.settingsHint}>
-              Switch between light and dark theme.
-            </Text>
-          </View>
-          <Switch
-            value={isDark}
-            onValueChange={(value) =>
-              themeMode?.setMode(value ? "dark" : "light")
-            }
-          />
-        </View>
-      </View>
-
-      <View
-        style={[
-          styles.card,
-          { backgroundColor: colors.card, borderColor: colors.border },
-        ]}
-      >
-        <Text style={[styles.cardTitle, { color: colors.text }]}>Server</Text>
-
-        <Text style={styles.settingsLabel}>Server URL</Text>
-        <Text style={styles.settingsValue}>{NAS_BASE_URL}</Text>
+    <>
+      <ScreenContainer>
+        <Header
+          title="Settings"
+          subtitle="Account, server & backup preferences"
+        />
 
         <View
           style={[
-            styles.pillStatus,
-            {
-              backgroundColor: serverOnline
-                ? "rgba(22,163,74,0.15)"
-                : "rgba(239,68,68,0.15)",
-            },
+            styles.card,
+            { backgroundColor: colors.card, borderColor: colors.border },
           ]}
         >
-          <Text style={[styles.pillDot, { color: serverStatusColor }]}>●</Text>
-          <Text style={[styles.pillText, { color: serverStatusColor }]}>
-            {serverStatusText}
+          <Text style={[styles.cardTitle, { color: colors.text }]}>
+            Appearance
           </Text>
-        </View>
 
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={checkServer}
-          disabled={checkingServer}
-        >
-          <Text style={styles.secondaryButtonText}>
-            {checkingServer ? "Checking..." : "Check server again"}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      <View
-        style={[
-          styles.card,
-          { backgroundColor: colors.card, borderColor: colors.border },
-        ]}
-      >
-        <Text style={[styles.cardTitle, { color: colors.text }]}>Backup</Text>
-
-        <View style={styles.toggleRow}>
-          <View style={{ flex: 1, paddingRight: 8 }}>
-            <Text style={styles.settingsLabel}>Backup on app open</Text>
-            <Text style={styles.settingsHint}>
-              Scan for new media each time you open the app.
-            </Text>
-          </View>
-          <Switch value={backupOnOpen} onValueChange={setBackupOnOpen} />
-        </View>
-
-        <View style={styles.toggleRow}>
-          <View style={{ flex: 1, paddingRight: 8 }}>
-            <Text style={styles.settingsLabel}>Wi-Fi only</Text>
-            <Text style={styles.settingsHint}>
-              Avoid using mobile data for uploads.
-            </Text>
-          </View>
-          <Switch value={wifiOnly} onValueChange={setWifiOnly} />
-        </View>
-
-        <TouchableOpacity
-          style={[styles.primaryButton, runningBackup && styles.buttonDisabled]}
-          onPress={handleBackupNow}
-          disabled={runningBackup}
-        >
-          {runningBackup ? (
-            <View style={styles.buttonContentRow}>
-              <ActivityIndicator size="small" color="#0f172a" />
-              <Text style={styles.primaryButtonText}>Backing up...</Text>
-            </View>
-          ) : (
-            <Text style={styles.primaryButtonText}>Backup now</Text>
-          )}
-        </TouchableOpacity>
-
-        {lastBackupSummary ? (
-          <Text style={styles.summaryText}>{lastBackupSummary}</Text>
-        ) : null}
-
-        <View style={styles.sectionDivider} />
-
-        <Text style={styles.settingsLabel}>AI tagging</Text>
-        <Text style={styles.settingsHint}>
-          Retry failed tags and queue media that was not tagged yet.
-        </Text>
-
-        <TouchableOpacity
-          style={[
-            styles.secondaryButton,
-            retryingTags && styles.buttonDisabled,
-          ]}
-          onPress={handleRetryAiTagging}
-          disabled={retryingTags}
-        >
-          {retryingTags ? (
-            <View style={styles.buttonContentRow}>
-              <ActivityIndicator size="small" color="#f97316" />
-              <Text style={styles.secondaryButtonText}>
-                Retrying AI tagging...
+          <View style={styles.toggleRow}>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={styles.settingsLabel}>Dark mode</Text>
+              <Text style={styles.settingsHint}>
+                Switch between light and dark theme.
               </Text>
             </View>
-          ) : (
-            <Text style={styles.secondaryButtonText}>
-              Retry failed / untagged AI tagging
+            <Switch
+              value={isDark}
+              onValueChange={(value) =>
+                themeMode?.setMode(value ? "dark" : "light")
+              }
+            />
+          </View>
+        </View>
+
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <Text style={[styles.cardTitle, { color: colors.text }]}>Server</Text>
+
+          <Text style={styles.settingsLabel}>Server URL</Text>
+          <Text style={styles.settingsValue}>{NAS_BASE_URL}</Text>
+
+          <View
+            style={[
+              styles.pillStatus,
+              {
+                backgroundColor: serverOnline
+                  ? "rgba(22,163,74,0.15)"
+                  : "rgba(239,68,68,0.15)",
+              },
+            ]}
+          >
+            <Text style={[styles.pillDot, { color: serverStatusColor }]}>
+              ●
             </Text>
-          )}
-        </TouchableOpacity>
-      </View>
+            <Text style={[styles.pillText, { color: serverStatusColor }]}>
+              {serverStatusText}
+            </Text>
+          </View>
 
-      <View
-        style={[
-          styles.card,
-          { backgroundColor: colors.card, borderColor: colors.border },
-        ]}
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={checkServer}
+            disabled={checkingServer}
+          >
+            <Text style={styles.secondaryButtonText}>
+              {checkingServer ? "Checking..." : "Check server again"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <Text style={[styles.cardTitle, { color: colors.text }]}>Backup</Text>
+
+          <View style={styles.toggleRow}>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={styles.settingsLabel}>Backup on app open</Text>
+              <Text style={styles.settingsHint}>
+                Scan for new media each time you open the app.
+              </Text>
+            </View>
+            <Switch value={backupOnOpen} onValueChange={setBackupOnOpen} />
+          </View>
+
+          <View style={styles.toggleRow}>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={styles.settingsLabel}>Wi-Fi only</Text>
+              <Text style={styles.settingsHint}>
+                Avoid using mobile data for uploads.
+              </Text>
+            </View>
+            <Switch value={wifiOnly} onValueChange={setWifiOnly} />
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.primaryButton,
+              runningBackup && styles.buttonDisabled,
+            ]}
+            onPress={handleBackupNow}
+            disabled={runningBackup}
+          >
+            {runningBackup ? (
+              <View style={styles.buttonContentRow}>
+                <ActivityIndicator size="small" color="#0f172a" />
+                <Text style={styles.primaryButtonText}>Backing up...</Text>
+              </View>
+            ) : (
+              <Text style={styles.primaryButtonText}>Backup now</Text>
+            )}
+          </TouchableOpacity>
+
+          {lastBackupSummary ? (
+            <Text style={styles.summaryText}>{lastBackupSummary}</Text>
+          ) : null}
+
+          <View style={styles.sectionDivider} />
+
+          <Text style={styles.settingsLabel}>AI tagging</Text>
+          <Text style={styles.settingsHint}>
+            Choose which AI model is used for tagging new uploads and retry
+            tagging.
+          </Text>
+
+          <TouchableOpacity
+            style={styles.modelSelectorButton}
+            onPress={() => setModelModalVisible(true)}
+            disabled={loadingModels || availableModels.length === 0}
+          >
+            <Text style={styles.modelSelectorButtonText}>
+              {loadingModels
+                ? "Loading models..."
+                : selectedModel || "No model available"}
+            </Text>
+            <Text style={styles.modelSelectorChevron}>▾</Text>
+          </TouchableOpacity>
+
+          <Text style={styles.settingsHint}>
+            {availableModels.length > 0
+              ? `${availableModels.length} model(s) available`
+              : loadingModels
+                ? "Checking available models..."
+                : "No supported vision models found"}
+          </Text>
+
+          <TouchableOpacity
+            style={[
+              styles.secondaryButton,
+              savingModel && styles.buttonDisabled,
+            ]}
+            onPress={handleSaveSelectedModel}
+            disabled={savingModel || !selectedModel}
+          >
+            {savingModel ? (
+              <View style={styles.buttonContentRow}>
+                <ActivityIndicator size="small" color="#f97316" />
+                <Text style={styles.secondaryButtonText}>Saving model...</Text>
+              </View>
+            ) : (
+              <Text style={styles.secondaryButtonText}>Save model</Text>
+            )}
+          </TouchableOpacity>
+
+          <Text style={styles.settingsHint}>
+            Retry failed tags and queue media that was not tagged yet.
+          </Text>
+
+          <TouchableOpacity
+            style={[
+              styles.secondaryButton,
+              retryingTags && styles.buttonDisabled,
+            ]}
+            onPress={handleRetryAiTagging}
+            disabled={retryingTags}
+          >
+            {retryingTags ? (
+              <View style={styles.buttonContentRow}>
+                <ActivityIndicator size="small" color="#f97316" />
+                <Text style={styles.secondaryButtonText}>
+                  Retrying AI tagging...
+                </Text>
+              </View>
+            ) : (
+              <Text style={styles.secondaryButtonText}>
+                Retry failed / untagged AI tagging
+              </Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        <View
+          style={[
+            styles.card,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <Text style={[styles.cardTitle, { color: colors.text }]}>
+            Account
+          </Text>
+
+          <Text style={styles.settingsLabel}>Logged in as</Text>
+          <Text style={styles.settingsValue}>
+            {auth?.user?.email || "Signed in"}
+          </Text>
+
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={handleLogout}
+          >
+            <Text style={styles.secondaryButtonText}>Log out</Text>
+          </TouchableOpacity>
+        </View>
+      </ScreenContainer>
+
+      <Modal
+        visible={modelModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setModelModalVisible(false)}
       >
-        <Text style={[styles.cardTitle, { color: colors.text }]}>Account</Text>
+        <View style={styles.photoMenuBackdrop}>
+          <Pressable
+            style={styles.photoMenuBackdropPressArea}
+            onPress={() => setModelModalVisible(false)}
+          />
 
-        <Text style={styles.settingsLabel}>Logged in as</Text>
-        <Text style={styles.settingsValue}>
-          {auth?.user?.email || "Signed in"}
-        </Text>
+          <View style={styles.photoMenuSheet}>
+            <Text style={styles.photoMenuTitle}>Choose AI model</Text>
+            <Text style={styles.settingsHint}>
+              This affects future uploads and retry tagging.
+            </Text>
 
-        <TouchableOpacity style={styles.secondaryButton} onPress={handleLogout}>
-          <Text style={styles.secondaryButtonText}>Log out</Text>
-        </TouchableOpacity>
-      </View>
-    </ScreenContainer>
+            <ScrollView
+              style={{ maxHeight: 320, marginTop: 10 }}
+              showsVerticalScrollIndicator={false}
+            >
+              {availableModels.map((model) => {
+                const isSelected = model === selectedModel;
+
+                return (
+                  <TouchableOpacity
+                    key={model}
+                    style={styles.modelOptionRow}
+                    onPress={() => setSelectedModel(model)}
+                    activeOpacity={0.7}
+                  >
+                    <Text
+                      style={[
+                        styles.modelOptionText,
+                        isSelected && styles.modelOptionTextSelected,
+                      ]}
+                    >
+                      {model}
+                    </Text>
+
+                    <View
+                      style={[
+                        styles.modelRadioOuter,
+                        isSelected && styles.modelRadioOuterSelected,
+                      ]}
+                    >
+                      {isSelected ? (
+                        <View style={styles.modelRadioInner} />
+                      ) : null}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[
+                styles.photoMenuAction,
+                savingModel && styles.buttonDisabled,
+              ]}
+              onPress={handleSaveSelectedModel}
+              disabled={savingModel || !selectedModel}
+            >
+              <Text style={styles.photoMenuActionText}>
+                {savingModel ? "Saving..." : "Save selected model"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.photoMenuAction, styles.photoMenuCancelAction]}
+              onPress={() => setModelModalVisible(false)}
+            >
+              <Text style={styles.photoMenuCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -598,5 +853,108 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: "#9ca3af",
     lineHeight: 18,
+  },
+  modelSelectorButton: {
+    marginTop: 10,
+    minHeight: 52,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#1f2933",
+    backgroundColor: "#020617",
+    paddingHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  modelSelectorButtonText: {
+    color: "#e5e7eb",
+    fontSize: 16,
+    flex: 1,
+  },
+  modelSelectorChevron: {
+    color: "#9ca3af",
+    fontSize: 16,
+    marginLeft: 12,
+  },
+  photoMenuBackdrop: {
+    flex: 1,
+    justifyContent: "flex-end",
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
+  photoMenuBackdropPressArea: {
+    flex: 1,
+  },
+  photoMenuSheet: {
+    backgroundColor: "#020617",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 28,
+    borderTopWidth: 1,
+    borderColor: "#1f2933",
+  },
+  photoMenuTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#e5e7eb",
+    marginBottom: 10,
+  },
+  photoMenuAction: {
+    paddingVertical: 18,
+    borderTopWidth: 1,
+    borderColor: "#1f2933",
+  },
+  photoMenuActionText: {
+    fontSize: 16,
+    color: "#e5e7eb",
+  },
+  photoMenuCancelAction: {
+    marginTop: 8,
+  },
+  photoMenuCancelText: {
+    fontSize: 16,
+    color: "#f97373",
+    fontWeight: "600",
+  },
+  modelOptionRow: {
+    minHeight: 52,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#1f2933",
+    backgroundColor: "#020617",
+    paddingHorizontal: 14,
+    marginBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  modelOptionText: {
+    color: "#e5e7eb",
+    fontSize: 15,
+    flex: 1,
+  },
+  modelOptionTextSelected: {
+    color: "#38bdf8",
+    fontWeight: "600",
+  },
+  modelRadioOuter: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: "#4b5563",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 12,
+  },
+  modelRadioOuterSelected: {
+    borderColor: "#38bdf8",
+  },
+  modelRadioInner: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#38bdf8",
   },
 });
