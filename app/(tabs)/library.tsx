@@ -44,7 +44,7 @@ import { Header, ScreenContainer } from "./_components";
 // -----------------------------------------------------------------------------
 
 type MediaType = "photo" | "video";
-type MediaSource = "device" | "server";
+type MediaSource = "device" | "server" | "mock";
 
 type MediaItem = {
   id: string;
@@ -216,11 +216,26 @@ function buildDedupKey(item: MediaItem): string {
 }
 
 function dedupeMediaItems(items: MediaItem[]): MediaItem[] {
-  const priority = (source: MediaSource) => {
+  const sourcePriority = (source: MediaSource) => {
     if (source === "server") return 3;
     if (source === "device") return 2;
     if (source === "mock") return 1;
     return 0;
+  };
+
+  // Prefer the item that has the most useful/up-to-date metadata.
+  // This matters right after upload: the local item may be temporarily marked
+  // as "server", but the real NAS item has id "server-..." and contains tags.
+  const metadataScore = (item: MediaItem) => {
+    let score = sourcePriority(item.source) * 100;
+
+    if (item.id.startsWith("server-")) score += 20;
+    if (item.tagStatus && item.tagStatus !== "none") score += 10;
+    if ((item.tags?.length ?? 0) > 0) score += 5;
+    if (item.taggedAt) score += 2;
+    if (item.tagModel) score += 1;
+
+    return score;
   };
 
   const buckets = new Map<string, MediaItem[]>();
@@ -235,7 +250,7 @@ function dedupeMediaItems(items: MediaItem[]): MediaItem[] {
   for (const bucket of buckets.values()) {
     let best = bucket[0];
     for (const item of bucket) {
-      if (priority(item.source) > priority(best.source)) {
+      if (metadataScore(item) > metadataScore(best)) {
         best = item;
       }
     }
@@ -655,7 +670,7 @@ export default function LibraryScreen() {
       base = base.filter((m) => matchesSearch(m, searchQuery));
     }
 
-    // 🔥 Dedupe device/server/mock duplicates by key
+    //  Dedupe device/server/mock duplicates by key
     return dedupeMediaItems(base);
   }, [media, filter, activeAlbum, albumEditMode, manualAlbums, searchQuery]);
 
@@ -720,14 +735,27 @@ export default function LibraryScreen() {
       });
 
       setMedia((prev): MediaItem[] => {
-        const existingIds = new Set(prev.map((m) => m.id));
-        const merged = [...prev];
-        for (const item of serverItems) {
-          if (!existingIds.has(item.id)) {
-            merged.push(item);
-          }
+        const mergedById = new Map<string, MediaItem>();
+
+        // Keep existing local/device items, but always allow NAS items to refresh
+        // their metadata on every sync. Tags often change after upload because
+        // AI tagging finishes asynchronously.
+        for (const item of prev) {
+          mergedById.set(item.id, item);
         }
-        return merged;
+
+        for (const item of serverItems) {
+          const existing = mergedById.get(item.id);
+
+          mergedById.set(item.id, {
+            ...existing,
+            ...item,
+            // Keep client-only values unless the server explicitly supports them.
+            favorite: existing?.favorite ?? item.favorite,
+          });
+        }
+
+        return Array.from(mergedById.values());
       });
     } catch (err) {
       console.error("Error syncing NAS media", err);
@@ -925,9 +953,12 @@ export default function LibraryScreen() {
 
   const handleSyncClick = useCallback(async () => {
     setSyncing(true);
-    await Promise.all([handleRefresh(), syncFromServer()]);
-    setSyncing(false);
-  }, [handleRefresh, syncFromServer]);
+    try {
+      await syncFromServer();
+    } finally {
+      setSyncing(false);
+    }
+  }, [syncFromServer]);
 
   // Auto-sync once when token appears
   useEffect(() => {
@@ -937,7 +968,7 @@ export default function LibraryScreen() {
 
   // Scan device
   const handleScanDevice = useCallback(async () => {
-    // 🌐 Web: open file picker instead of MediaLibrary
+    //  Web: open file picker instead of MediaLibrary
     if (Platform.OS === "web") {
       if (typeof document === "undefined") {
         console.warn("document is not available on web?");
@@ -1005,7 +1036,7 @@ export default function LibraryScreen() {
       return;
     }
 
-    // 📱 Native (iOS/Android): keep existing expo-media-library scan
+    //  Native (iOS/Android): keep existing expo-media-library scan
     setScanningDevice(true);
     try {
       const { status } = await MediaLibrary.requestPermissionsAsync();
@@ -1079,7 +1110,7 @@ export default function LibraryScreen() {
           return false;
         }
 
-        // 🌐 Web: upload using File object
+        //  Web: upload using File object
         if (Platform.OS === "web" && item.source === "device") {
           if (!item.file) {
             console.warn("No File object attached for web media item");
@@ -1113,7 +1144,7 @@ export default function LibraryScreen() {
           return true;
         }
 
-        // 📱 Native: existing device upload via file:// uri
+        // Native: existing device upload via file:// uri
         if (item.source === "device" && Platform.OS !== "web") {
           const formData = new FormData();
 
@@ -1195,11 +1226,16 @@ export default function LibraryScreen() {
 
       if (ok) {
         successCount++;
-        setMedia((prev) =>
-          prev.map((m) => (m.id === item.id ? { ...m, source: "server" } : m)),
-        );
+
+        // Do not mutate the local device item into a fake server item.
+        // The real NAS item has a different id (`server-...`) and is the one
+        // that will later receive tagStatus/tags from the backend.
       }
     }
+
+    // Pull the newly uploaded NAS records immediately. This adds the real
+    // server items with tagStatus/tags, while keeping local device items intact.
+    await syncFromServer();
 
     setUploading(false);
     setSelectedIds(new Set());
@@ -1209,7 +1245,7 @@ export default function LibraryScreen() {
       "Upload complete",
       `Uploaded ${successCount} of ${itemsToUpload.length} item(s) to NAS.`,
     );
-  }, [media, selectedCount, selectedIds, uploadOneToNas]);
+  }, [media, selectedCount, selectedIds, uploadOneToNas, syncFromServer]);
 
   // Manual albums
 

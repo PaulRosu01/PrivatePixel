@@ -8,8 +8,8 @@ import React, {
   useState,
 } from "react";
 
-// ⚠️ Make sure this matches your backend IP / port
-// e.g. "http://192.168.0.100:3001"
+
+
 export const NAS_BASE_URL = "https://private.moondrey.com";
 
 export type User = {
@@ -20,7 +20,7 @@ export type User = {
 export type AuthContextValue = {
   user: User | null;
   token: string | null;
-  isLoggedIn: boolean; // ✅ keeps your previous API idea
+  isLoggedIn: boolean; //  keeps your previous API idea
   initializing: boolean; // loading auth from storage on app startup
   authLoading: boolean; // login/register in progress
   login: (email: string, password: string) => Promise<void>;
@@ -132,7 +132,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const value: AuthContextValue = {
     user,
     token,
-    isLoggedIn: !!user, // ✅ replaces your old boolean
+    isLoggedIn: !!user, 
     initializing,
     authLoading,
     login,
@@ -143,7 +143,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
-// Convenience hook so you don’t have to use useContext(AuthContext) everywhere
+
 export const useAuth = () => {
   const ctx = useContext(AuthContext);
   if (!ctx) {

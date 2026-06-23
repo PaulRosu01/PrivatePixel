@@ -37,7 +37,7 @@ export default function LoginScreen() {
         await register(email, password);
       }
 
-      // After successful auth, let index.tsx redirect based on auth state.
+      
       router.replace("/"); // goes to index -> redirects to (tabs)
     } catch (e: any) {
       setError(e?.message || "Authentication failed. Please try again.");
